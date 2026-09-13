@@ -1,28 +1,44 @@
 from google import genai
+from google.genai import types
+
 import json
 import os
+import time
 
 
 class GeminiAgent:
     def __init__(
         self,
-        model="gemini-3.6-flash",
-        history_file="history.json"
+        model="gemini-3.5-flash-lite",
+        history_file="history.json",
+        summary_file="summary.txt",
+        keep_last=6,
+        compress_every=10
     ):
         self.client = genai.Client()
+
         self.model = model
         self.history_file = history_file
+        self.summary_file = summary_file
+
+        # Последние N сообщений храним полностью
+        self.keep_last = keep_last
+
+        # Сколько старых сообщений сжимаем за один раз
+        self.compress_every = compress_every
 
         self.messages = self.load_history()
+        self.summary = self.load_summary()
 
-        # Получаем реальные лимиты модели
-        model_info = self.client.models.get(model=self.model)
+        # Статистика последнего запроса
+        self.last_input_tokens = 0
+        self.last_output_tokens = 0
+        self.last_total_tokens = 0
+        self.last_request_time = 0
 
-        self.input_token_limit = model_info.input_token_limit
-        self.output_token_limit = model_info.output_token_limit
-
-        # По умолчанию используется реальный лимит
-        self.token_limit = self.input_token_limit
+    # =========================================================
+    # ЗАГРУЗКА И СОХРАНЕНИЕ
+    # =========================================================
 
     def load_history(self):
         if not os.path.exists(self.history_file):
@@ -52,215 +68,189 @@ class GeminiAgent:
                 indent=2
             )
 
-    def clear_history(self):
-        self.messages = []
-        self.save_history()
+    def load_summary(self):
+        if not os.path.exists(self.summary_file):
+            return ""
 
-    def set_token_limit(self, limit):
-        self.token_limit = limit
+        try:
+            with open(
+                self.summary_file,
+                "r",
+                encoding="utf-8"
+            ) as file:
+                return file.read()
 
-    def reset_token_limit(self):
-        self.token_limit = self.input_token_limit
+        except OSError:
+            return ""
 
-    def build_prompt(self, user_message=None):
+    def save_summary(self):
+        with open(
+            self.summary_file,
+            "w",
+            encoding="utf-8"
+        ) as file:
+            file.write(self.summary)
+
+    # =========================================================
+    # ИСТОРИЯ -> ТЕКСТ
+    # =========================================================
+
+    def messages_to_text(self, messages):
+        parts = []
+
+        for message in messages:
+            if message["role"] == "user":
+                role_name = "Пользователь"
+            else:
+                role_name = "Ассистент"
+
+            parts.append(
+                f"{role_name}: {message['text']}"
+            )
+
+        return "\n\n".join(parts)
+
+    # =========================================================
+    # СОЗДАНИЕ PROMPT
+    # =========================================================
+
+    def build_prompt(self, user_message):
         prompt_parts = []
 
-        for message in self.messages:
-            role = message["role"]
-            text = message["text"]
-
-            if role == "user":
-                prompt_parts.append(
-                    f"Пользователь: {text}"
-                )
-            else:
-                prompt_parts.append(
-                    f"Ассистент: {text}"
-                )
-
-        if user_message is not None:
+        # Старый контекст в сжатом виде
+        if self.summary:
             prompt_parts.append(
-                f"Пользователь: {user_message}"
+                "Краткое содержание предыдущего диалога:"
             )
-            prompt_parts.append("Ассистент:")
+
+            prompt_parts.append(
+                self.summary
+            )
+
+        # Последние сообщения без изменений
+        if self.messages:
+            prompt_parts.append(
+                "Последние сообщения диалога:"
+            )
+
+            prompt_parts.append(
+                self.messages_to_text(
+                    self.messages
+                )
+            )
+
+        # Новый вопрос
+        prompt_parts.append(
+            f"Пользователь: {user_message}"
+        )
+
+        prompt_parts.append(
+            "Ассистент:"
+        )
 
         return "\n\n".join(prompt_parts)
 
-    def count_tokens(self, text):
-        if not text:
-            return 0
+    # =========================================================
+    # СЖАТИЕ ИСТОРИИ
+    # =========================================================
 
-        result = self.client.models.count_tokens(
-            model=self.model,
-            contents=text
+    def compress_history(self):
+        old_count = (
+            len(self.messages)
+            - self.keep_last
         )
 
-        return result.total_tokens
+        # Пока старых сообщений недостаточно
+        if old_count < self.compress_every:
+            return
 
-    def get_history_tokens(self):
-        history_text = self.build_prompt()
-
-        return self.count_tokens(history_text)
-
-    def show_stats(self):
-        history_tokens = self.get_history_tokens()
-
-        print()
-        print("=" * 60)
-        print("СТАТИСТИКА ДИАЛОГА")
-        print("=" * 60)
-
-        print(
-            f"Сообщений в истории:   "
-            f"{len(self.messages)}"
+        # Берём первые 10 сообщений
+        messages_to_compress = (
+            self.messages[
+                :self.compress_every
+            ]
         )
 
-        print(
-            f"Токенов в истории:     "
-            f"{history_tokens}"
-        )
-
-        print(
-            f"Текущий лимит:         "
-            f"{self.token_limit}"
-        )
-
-        print(
-            f"Реальный лимит модели: "
-            f"{self.input_token_limit}"
-        )
-
-        percent = (
-            history_tokens
-            / self.token_limit
-            * 100
-        )
-
-        print(
-            f"Лимит заполнен:        "
-            f"{percent:.2f}%"
-        )
-
-    def ask(self, user_message):
-        # Токены только нового сообщения
-        current_request_tokens = self.count_tokens(
-            user_message
-        )
-
-        # Токены предыдущей истории
-        history_tokens = self.get_history_tokens()
-
-        # История + новый запрос
-        prompt = self.build_prompt(user_message)
-
-        full_prompt_tokens = self.count_tokens(
-            prompt
+        old_text = self.messages_to_text(
+            messages_to_compress
         )
 
         print()
-        print("-" * 60)
-        print("ТОКЕНЫ ДО ЗАПРОСА")
-        print("-" * 60)
+        print("=" * 60)
+        print("СЖАТИЕ ИСТОРИИ")
+        print("=" * 60)
 
         print(
-            f"Текущий запрос:        "
-            f"{current_request_tokens}"
+            f"Сообщений для сжатия: "
+            f"{len(messages_to_compress)}"
         )
 
-        print(
-            f"История диалога:       "
-            f"{history_tokens}"
-        )
+        # -----------------------------------------------------
+        # PROMPT ДЛЯ SUMMARY
+        # -----------------------------------------------------
 
-        print(
-            f"Весь вход в модель:    "
-            f"{full_prompt_tokens}"
-        )
+        summary_prompt = f"""
+Создай краткое содержание предыдущего диалога.
 
-        print(
-            f"Текущий лимит:         "
-            f"{self.token_limit}"
-        )
+Сохрани только действительно важную информацию:
 
-        print(
-            f"Реальный лимит модели: "
-            f"{self.input_token_limit}"
-        )
+- имена;
+- важные факты;
+- предпочтения пользователя;
+- решения;
+- договорённости;
+- важные детали;
+- контекст, который может понадобиться позже.
 
-        percent = (
-            full_prompt_tokens
-            / self.token_limit
-            * 100
-        )
+Не добавляй информацию, которой не было в диалоге.
 
-        print(
-            f"Лимит заполнен:        "
-            f"{percent:.2f}%"
-        )
+Не пересказывай разговор подробно.
 
-        # Проверка установленного лимита
-        if full_prompt_tokens > self.token_limit:
-            print()
-            print("=" * 60)
-            print("КОНТЕКСТ ПЕРЕПОЛНЕН")
-            print("=" * 60)
+Summary должно быть коротким и информативным.
 
-            print(
-                f"Количество токенов: "
-                f"{full_prompt_tokens}"
-            )
+Предыдущее summary:
 
-            print(
-                f"Текущий лимит:      "
-                f"{self.token_limit}"
-            )
+{self.summary if self.summary else "Отсутствует"}
 
-            print()
-            print(
-                "Запрос НЕ отправлен в Gemini API."
-            )
+Новые сообщения для сжатия:
 
-            print(
-                "Увеличьте лимит командой "
-                "'limit ЧИСЛО' или очистите "
-                "историю командой 'clear'."
-            )
+{old_text}
 
-            return None
+Создай новое объединённое summary:
+"""
 
-        # Проверка реального лимита модели
-        if full_prompt_tokens > self.input_token_limit:
-            print()
-            print("ОШИБКА:")
-            print(
-                "Превышен реальный лимит "
-                "контекста модели."
-            )
+        print()
+        print("Создаём summary...")
 
-            return None
+        start = time.perf_counter()
 
-        # Запрос к Gemini
         response = self.client.models.generate_content(
             model=self.model,
-            contents=prompt
+            contents=summary_prompt,
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="minimal"
+                )
+            )
         )
 
-        answer = response.text
+        summary_time = (
+            time.perf_counter() - start
+        )
+
+        new_summary = response.text
+
         usage = response.usage_metadata
 
-        api_prompt_tokens = (
+        input_tokens = (
             usage.prompt_token_count or 0
         )
 
-        response_tokens = (
+        output_tokens = (
             usage.candidates_token_count or 0
         )
 
-        total_tokens = (
-            usage.total_token_count or 0
-        )
-
-        thoughts_tokens = (
+        thinking_tokens = (
             getattr(
                 usage,
                 "thoughts_token_count",
@@ -268,32 +258,280 @@ class GeminiAgent:
             ) or 0
         )
 
+        total_tokens = (
+            usage.total_token_count or 0
+        )
+
         print()
         print("-" * 60)
-        print("ТОКЕНЫ ПОСЛЕ ОТВЕТА")
+        print("SUMMARY СОЗДАН")
         print("-" * 60)
 
         print(
-            f"Входных токенов API: "
-            f"{api_prompt_tokens}"
+            f"Входных токенов:   "
+            f"{input_tokens}"
         )
 
         print(
-            f"Токенов ответа:      "
-            f"{response_tokens}"
+            f"Токенов summary:   "
+            f"{output_tokens}"
         )
 
         print(
-            f"Thinking tokens:     "
-            f"{thoughts_tokens}"
+            f"Thinking tokens:   "
+            f"{thinking_tokens}"
         )
 
         print(
-            f"Всего токенов API:   "
+            f"Всего токенов API: "
             f"{total_tokens}"
         )
 
-        # Сохраняем диалог
+        print(
+            f"Время создания:    "
+            f"{summary_time:.2f} сек."
+        )
+
+        # Сохраняем новый summary
+        self.summary = new_summary
+
+        # Удаляем сообщения,
+        # которые уже вошли в summary
+        self.messages = (
+            self.messages[
+                self.compress_every:
+            ]
+        )
+
+        self.save_history()
+        self.save_summary()
+
+        print()
+        print(
+            "Старые сообщения заменены summary."
+        )
+
+        print(
+            f"Сообщений осталось без сжатия: "
+            f"{len(self.messages)}"
+        )
+
+    # =========================================================
+    # СТАТИСТИКА
+    # =========================================================
+
+    def show_stats(self):
+        print()
+        print("=" * 60)
+        print("СТАТИСТИКА КОНТЕКСТА")
+        print("=" * 60)
+
+        print(
+            f"Сообщений без сжатия: "
+            f"{len(self.messages)}"
+        )
+
+        print(
+            f"Summary существует:   "
+            f"{'Да' if self.summary else 'Нет'}"
+        )
+
+        print()
+
+        if self.last_input_tokens > 0:
+            print(
+                "Последний запрос:"
+            )
+
+            print(
+                f"Входных токенов:       "
+                f"{self.last_input_tokens}"
+            )
+
+            print(
+                f"Токенов ответа:        "
+                f"{self.last_output_tokens}"
+            )
+
+            print(
+                f"Всего токенов API:     "
+                f"{self.last_total_tokens}"
+            )
+
+            print(
+                f"Время ответа:          "
+                f"{self.last_request_time:.2f} сек."
+            )
+
+        else:
+            print(
+                "Запросов в текущем запуске "
+                "ещё не было."
+            )
+
+    # =========================================================
+    # ПОКАЗАТЬ SUMMARY
+    # =========================================================
+
+    def show_summary(self):
+        print()
+        print("=" * 60)
+        print("SUMMARY")
+        print("=" * 60)
+
+        if self.summary:
+            print(self.summary)
+        else:
+            print(
+                "Summary пока отсутствует."
+            )
+
+    # =========================================================
+    # ОЧИСТКА
+    # =========================================================
+
+    def clear(self):
+        self.messages = []
+        self.summary = ""
+
+        self.last_input_tokens = 0
+        self.last_output_tokens = 0
+        self.last_total_tokens = 0
+        self.last_request_time = 0
+
+        self.save_history()
+        self.save_summary()
+
+    # =========================================================
+    # ОСНОВНОЙ ЗАПРОС
+    # =========================================================
+
+    def ask(self, user_message):
+        total_start = time.perf_counter()
+
+        # Создаём prompt локально.
+        # Никакого count_tokens() здесь больше нет.
+        prompt = self.build_prompt(
+            user_message
+        )
+
+        print()
+        print("-" * 60)
+        print("ЗАПРОС К GEMINI")
+        print("-" * 60)
+
+        print(
+            f"Summary: "
+            f"{'есть' if self.summary else 'нет'}"
+        )
+
+        print(
+            f"Сообщений в обычной истории: "
+            f"{len(self.messages)}"
+        )
+
+        print()
+        print("Отправляем запрос Gemini...")
+
+        # -----------------------------------------------------
+        # GEMINI
+        # -----------------------------------------------------
+
+        start = time.perf_counter()
+
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="minimal"
+                )
+            )
+        )
+
+        gemini_time = (
+            time.perf_counter() - start
+        )
+
+        answer = response.text
+        usage = response.usage_metadata
+
+        # -----------------------------------------------------
+        # ТОКЕНЫ БЕРЁМ ИЗ ОТВЕТА GEMINI
+        # -----------------------------------------------------
+
+        input_tokens = (
+            usage.prompt_token_count or 0
+        )
+
+        output_tokens = (
+            usage.candidates_token_count or 0
+        )
+
+        thinking_tokens = (
+            getattr(
+                usage,
+                "thoughts_token_count",
+                0
+            ) or 0
+        )
+
+        total_tokens = (
+            usage.total_token_count or 0
+        )
+
+        # Запоминаем статистику
+        self.last_input_tokens = (
+            input_tokens
+        )
+
+        self.last_output_tokens = (
+            output_tokens
+        )
+
+        self.last_total_tokens = (
+            total_tokens
+        )
+
+        self.last_request_time = (
+            gemini_time
+        )
+
+        print()
+        print("-" * 60)
+        print("ТОКЕНЫ")
+        print("-" * 60)
+
+        print(
+            f"Входных токенов:   "
+            f"{input_tokens}"
+        )
+
+        print(
+            f"Токенов ответа:    "
+            f"{output_tokens}"
+        )
+
+        print(
+            f"Thinking tokens:   "
+            f"{thinking_tokens}"
+        )
+
+        print(
+            f"Всего токенов API: "
+            f"{total_tokens}"
+        )
+
+        print()
+        print(
+            f"Время Gemini:      "
+            f"{gemini_time:.2f} сек."
+        )
+
+        # -----------------------------------------------------
+        # СОХРАНЯЕМ ИСТОРИЮ
+        # -----------------------------------------------------
+
         self.messages.append({
             "role": "user",
             "text": user_message
@@ -306,8 +544,28 @@ class GeminiAgent:
 
         self.save_history()
 
+        # -----------------------------------------------------
+        # ПРОВЕРЯЕМ, НУЖНО ЛИ СЖАТИЕ
+        # -----------------------------------------------------
+
+        self.compress_history()
+
+        total_time = (
+            time.perf_counter()
+            - total_start
+        )
+
+        print(
+            f"Общее время:       "
+            f"{total_time:.2f} сек."
+        )
+
         return answer
 
+
+# =============================================================
+# HELP
+# =============================================================
 
 def show_help():
     print()
@@ -316,109 +574,101 @@ def show_help():
     print("=" * 60)
 
     print(
-        "  help         — показать подсказку"
+        "  help     — показать подсказку"
     )
 
     print(
-        "  stats        — показать статистику токенов"
+        "  stats    — показать статистику"
     )
 
     print(
-        "  clear        — очистить историю диалога"
+        "  summary  — показать summary"
     )
 
     print(
-        "  limit 500    — установить лимит 500 токенов"
+        "  clear    — очистить историю и summary"
     )
 
     print(
-        "  limit 1000   — установить лимит 1000 токенов"
-    )
-
-    print(
-        "  limit real   — вернуть реальный лимит модели"
-    )
-
-    print(
-        "  exit         — завершить программу"
+        "  exit     — завершить программу"
     )
 
     print()
     print(
-        "Любой другой текст будет отправлен агенту."
+        "Любой другой текст "
+        "будет отправлен агенту."
     )
 
     print("=" * 60)
 
+
+# =============================================================
+# MAIN
+# =============================================================
 
 def main():
     agent = GeminiAgent()
 
     print("=" * 60)
-    print("ДЕНЬ 8 — РАБОТА С ТОКЕНАМИ")
+    print("ДЕНЬ 9 — УПРАВЛЕНИЕ КОНТЕКСТОМ")
     print("=" * 60)
 
     print()
+
     print(
-        f"Модель:                "
+        f"Модель:                     "
         f"{agent.model}"
     )
 
     print(
-        f"Лимит входа модели:    "
-        f"{agent.input_token_limit}"
+        "Thinking level:             minimal"
     )
 
     print(
-        f"Лимит выхода модели:   "
-        f"{agent.output_token_limit}"
+        f"Последних сообщений храним: "
+        f"{agent.keep_last}"
     )
 
     print(
-        f"Текущий лимит:         "
-        f"{agent.token_limit}"
+        f"Сжимаем за один раз:        "
+        f"{agent.compress_every}"
     )
 
     print(
-        f"Сообщений в истории:   "
+        f"Сообщений загружено:        "
         f"{len(agent.messages)}"
     )
 
     print(
-        f"Токенов в истории:     "
-        f"{agent.get_history_tokens()}"
+        f"Summary существует:         "
+        f"{'Да' if agent.summary else 'Нет'}"
     )
 
-    # Показываем команды при запуске
     show_help()
 
     while True:
         print()
 
-        user_message = input("Вы: ").strip()
+        user_message = input(
+            "Вы: "
+        ).strip()
 
         if not user_message:
             continue
 
         command = user_message.lower()
 
-        # HELP
-        if command == "help":
-            show_help()
-            continue
-
         # EXIT
         if command == "exit":
             print()
-            print("Агент: До свидания!")
+            print(
+                "Агент: До свидания!"
+            )
             break
 
-        # CLEAR
-        if command == "clear":
-            agent.clear_history()
-
-            print()
-            print("История очищена.")
+        # HELP
+        if command == "help":
+            show_help()
             continue
 
         # STATS
@@ -426,70 +676,31 @@ def main():
             agent.show_stats()
             continue
 
-        # LIMIT
-        if command.startswith("limit "):
-            value = user_message[6:].strip()
+        # SUMMARY
+        if command == "summary":
+            agent.show_summary()
+            continue
 
-            if value.lower() == "real":
-                agent.reset_token_limit()
+        # CLEAR
+        if command == "clear":
+            agent.clear()
 
-                print()
-                print(
-                    "Установлен реальный лимит модели:"
-                )
-
-                print(agent.token_limit)
-                continue
-
-            try:
-                new_limit = int(value)
-
-                if new_limit <= 0:
-                    print()
-                    print(
-                        "Лимит должен быть больше 0."
-                    )
-                    continue
-
-                if new_limit > agent.input_token_limit:
-                    print()
-                    print(
-                        "Нельзя установить лимит выше "
-                        "реального лимита модели."
-                    )
-
-                    print(
-                        f"Реальный лимит: "
-                        f"{agent.input_token_limit}"
-                    )
-
-                    continue
-
-                agent.set_token_limit(new_limit)
-
-                print()
-                print(
-                    f"Установлен тестовый лимит: "
-                    f"{new_limit} токенов."
-                )
-
-            except ValueError:
-                print()
-                print("Неверное значение.")
-                print(
-                    "Пример: limit 500"
-                )
+            print()
+            print(
+                "История и summary очищены."
+            )
 
             continue
 
-        # ЗАПРОС К АГЕНТУ
+        # ОБЫЧНЫЙ ЗАПРОС
         try:
-            answer = agent.ask(user_message)
+            answer = agent.ask(
+                user_message
+            )
 
-            if answer is not None:
-                print()
-                print("Агент:")
-                print(answer)
+            print()
+            print("Агент:")
+            print(answer)
 
         except Exception as error:
             print()
