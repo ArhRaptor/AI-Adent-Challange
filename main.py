@@ -1,6 +1,7 @@
 from google import genai
 from google.genai import types
 
+import copy
 import json
 import os
 import time
@@ -10,433 +11,38 @@ class GeminiAgent:
     def __init__(
         self,
         model="gemini-3.5-flash-lite",
-        history_file="history.json",
-        summary_file="summary.txt",
-        keep_last=6,
-        compress_every=10
+        window_size=6
     ):
         self.client = genai.Client()
-
         self.model = model
-        self.history_file = history_file
-        self.summary_file = summary_file
+        self.window_size = window_size
 
-        # Последние N сообщений храним полностью
-        self.keep_last = keep_last
+        # Текущая стратегия
+        self.strategy = "sliding"
 
-        # Сколько старых сообщений сжимаем за один раз
-        self.compress_every = compress_every
-
-        self.messages = self.load_history()
-        self.summary = self.load_summary()
-
-        # Статистика последнего запроса
-        self.last_input_tokens = 0
-        self.last_output_tokens = 0
-        self.last_total_tokens = 0
-        self.last_request_time = 0
-
-    # =========================================================
-    # ЗАГРУЗКА И СОХРАНЕНИЕ
-    # =========================================================
-
-    def load_history(self):
-        if not os.path.exists(self.history_file):
-            return []
-
-        try:
-            with open(
-                self.history_file,
-                "r",
-                encoding="utf-8"
-            ) as file:
-                return json.load(file)
-
-        except (json.JSONDecodeError, OSError):
-            return []
-
-    def save_history(self):
-        with open(
-            self.history_file,
-            "w",
-            encoding="utf-8"
-        ) as file:
-            json.dump(
-                self.messages,
-                file,
-                ensure_ascii=False,
-                indent=2
-            )
-
-    def load_summary(self):
-        if not os.path.exists(self.summary_file):
-            return ""
-
-        try:
-            with open(
-                self.summary_file,
-                "r",
-                encoding="utf-8"
-            ) as file:
-                return file.read()
-
-        except OSError:
-            return ""
-
-    def save_summary(self):
-        with open(
-            self.summary_file,
-            "w",
-            encoding="utf-8"
-        ) as file:
-            file.write(self.summary)
-
-    # =========================================================
-    # ИСТОРИЯ -> ТЕКСТ
-    # =========================================================
-
-    def messages_to_text(self, messages):
-        parts = []
-
-        for message in messages:
-            if message["role"] == "user":
-                role_name = "Пользователь"
-            else:
-                role_name = "Ассистент"
-
-            parts.append(
-                f"{role_name}: {message['text']}"
-            )
-
-        return "\n\n".join(parts)
-
-    # =========================================================
-    # СОЗДАНИЕ PROMPT
-    # =========================================================
-
-    def build_prompt(self, user_message):
-        prompt_parts = []
-
-        # Старый контекст в сжатом виде
-        if self.summary:
-            prompt_parts.append(
-                "Краткое содержание предыдущего диалога:"
-            )
-
-            prompt_parts.append(
-                self.summary
-            )
-
-        # Последние сообщения без изменений
-        if self.messages:
-            prompt_parts.append(
-                "Последние сообщения диалога:"
-            )
-
-            prompt_parts.append(
-                self.messages_to_text(
-                    self.messages
-                )
-            )
-
-        # Новый вопрос
-        prompt_parts.append(
-            f"Пользователь: {user_message}"
-        )
-
-        prompt_parts.append(
-            "Ассистент:"
-        )
-
-        return "\n\n".join(prompt_parts)
-
-    # =========================================================
-    # СЖАТИЕ ИСТОРИИ
-    # =========================================================
-
-    def compress_history(self):
-        old_count = (
-            len(self.messages)
-            - self.keep_last
-        )
-
-        # Пока старых сообщений недостаточно
-        if old_count < self.compress_every:
-            return
-
-        # Берём первые 10 сообщений
-        messages_to_compress = (
-            self.messages[
-                :self.compress_every
-            ]
-        )
-
-        old_text = self.messages_to_text(
-            messages_to_compress
-        )
-
-        print()
-        print("=" * 60)
-        print("СЖАТИЕ ИСТОРИИ")
-        print("=" * 60)
-
-        print(
-            f"Сообщений для сжатия: "
-            f"{len(messages_to_compress)}"
-        )
-
-        # -----------------------------------------------------
-        # PROMPT ДЛЯ SUMMARY
-        # -----------------------------------------------------
-
-        summary_prompt = f"""
-Создай краткое содержание предыдущего диалога.
-
-Сохрани только действительно важную информацию:
-
-- имена;
-- важные факты;
-- предпочтения пользователя;
-- решения;
-- договорённости;
-- важные детали;
-- контекст, который может понадобиться позже.
-
-Не добавляй информацию, которой не было в диалоге.
-
-Не пересказывай разговор подробно.
-
-Summary должно быть коротким и информативным.
-
-Предыдущее summary:
-
-{self.summary if self.summary else "Отсутствует"}
-
-Новые сообщения для сжатия:
-
-{old_text}
-
-Создай новое объединённое summary:
-"""
-
-        print()
-        print("Создаём summary...")
-
-        start = time.perf_counter()
-
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=summary_prompt,
-            config=types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(
-                    thinking_level="minimal"
-                )
-            )
-        )
-
-        summary_time = (
-            time.perf_counter() - start
-        )
-
-        new_summary = response.text
-
-        usage = response.usage_metadata
-
-        input_tokens = (
-            usage.prompt_token_count or 0
-        )
-
-        output_tokens = (
-            usage.candidates_token_count or 0
-        )
-
-        thinking_tokens = (
-            getattr(
-                usage,
-                "thoughts_token_count",
-                0
-            ) or 0
-        )
-
-        total_tokens = (
-            usage.total_token_count or 0
-        )
-
-        print()
-        print("-" * 60)
-        print("SUMMARY СОЗДАН")
-        print("-" * 60)
-
-        print(
-            f"Входных токенов:   "
-            f"{input_tokens}"
-        )
-
-        print(
-            f"Токенов summary:   "
-            f"{output_tokens}"
-        )
-
-        print(
-            f"Thinking tokens:   "
-            f"{thinking_tokens}"
-        )
-
-        print(
-            f"Всего токенов API: "
-            f"{total_tokens}"
-        )
-
-        print(
-            f"Время создания:    "
-            f"{summary_time:.2f} сек."
-        )
-
-        # Сохраняем новый summary
-        self.summary = new_summary
-
-        # Удаляем сообщения,
-        # которые уже вошли в summary
-        self.messages = (
-            self.messages[
-                self.compress_every:
-            ]
-        )
-
-        self.save_history()
-        self.save_summary()
-
-        print()
-        print(
-            "Старые сообщения заменены summary."
-        )
-
-        print(
-            f"Сообщений осталось без сжатия: "
-            f"{len(self.messages)}"
-        )
-
-    # =========================================================
-    # СТАТИСТИКА
-    # =========================================================
-
-    def show_stats(self):
-        print()
-        print("=" * 60)
-        print("СТАТИСТИКА КОНТЕКСТА")
-        print("=" * 60)
-
-        print(
-            f"Сообщений без сжатия: "
-            f"{len(self.messages)}"
-        )
-
-        print(
-            f"Summary существует:   "
-            f"{'Да' if self.summary else 'Нет'}"
-        )
-
-        print()
-
-        if self.last_input_tokens > 0:
-            print(
-                "Последний запрос:"
-            )
-
-            print(
-                f"Входных токенов:       "
-                f"{self.last_input_tokens}"
-            )
-
-            print(
-                f"Токенов ответа:        "
-                f"{self.last_output_tokens}"
-            )
-
-            print(
-                f"Всего токенов API:     "
-                f"{self.last_total_tokens}"
-            )
-
-            print(
-                f"Время ответа:          "
-                f"{self.last_request_time:.2f} сек."
-            )
-
-        else:
-            print(
-                "Запросов в текущем запуске "
-                "ещё не было."
-            )
-
-    # =========================================================
-    # ПОКАЗАТЬ SUMMARY
-    # =========================================================
-
-    def show_summary(self):
-        print()
-        print("=" * 60)
-        print("SUMMARY")
-        print("=" * 60)
-
-        if self.summary:
-            print(self.summary)
-        else:
-            print(
-                "Summary пока отсутствует."
-            )
-
-    # =========================================================
-    # ОЧИСТКА
-    # =========================================================
-
-    def clear(self):
+        # Обычная история
         self.messages = []
-        self.summary = ""
 
-        self.last_input_tokens = 0
-        self.last_output_tokens = 0
+        # Sticky Facts
+        self.facts = {}
+
+        # Branching
+        self.branches = {
+            "main": []
+        }
+        self.current_branch = "main"
+
+        # Последняя статистика
+        self.last_prompt_tokens = 0
+        self.last_response_tokens = 0
         self.last_total_tokens = 0
-        self.last_request_time = 0
+        self.last_time = 0
 
-        self.save_history()
-        self.save_summary()
+    # ---------------------------------------------------------
+    # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+    # ---------------------------------------------------------
 
-    # =========================================================
-    # ОСНОВНОЙ ЗАПРОС
-    # =========================================================
-
-    def ask(self, user_message):
-        total_start = time.perf_counter()
-
-        # Создаём prompt локально.
-        # Никакого count_tokens() здесь больше нет.
-        prompt = self.build_prompt(
-            user_message
-        )
-
-        print()
-        print("-" * 60)
-        print("ЗАПРОС К GEMINI")
-        print("-" * 60)
-
-        print(
-            f"Summary: "
-            f"{'есть' if self.summary else 'нет'}"
-        )
-
-        print(
-            f"Сообщений в обычной истории: "
-            f"{len(self.messages)}"
-        )
-
-        print()
-        print("Отправляем запрос Gemini...")
-
-        # -----------------------------------------------------
-        # GEMINI
-        # -----------------------------------------------------
-
+    def generate(self, prompt):
         start = time.perf_counter()
 
         response = self.client.models.generate_content(
@@ -449,254 +55,588 @@ Summary должно быть коротким и информативным.
             )
         )
 
-        gemini_time = (
-            time.perf_counter() - start
-        )
+        elapsed = time.perf_counter() - start
 
-        answer = response.text
         usage = response.usage_metadata
 
-        # -----------------------------------------------------
-        # ТОКЕНЫ БЕРЁМ ИЗ ОТВЕТА GEMINI
-        # -----------------------------------------------------
-
-        input_tokens = (
+        self.last_prompt_tokens = (
             usage.prompt_token_count or 0
         )
 
-        output_tokens = (
+        self.last_response_tokens = (
             usage.candidates_token_count or 0
         )
 
-        thinking_tokens = (
-            getattr(
-                usage,
-                "thoughts_token_count",
-                0
-            ) or 0
-        )
-
-        total_tokens = (
+        self.last_total_tokens = (
             usage.total_token_count or 0
         )
 
-        # Запоминаем статистику
-        self.last_input_tokens = (
-            input_tokens
+        self.last_time = elapsed
+
+        return response.text
+
+    def messages_to_text(self, messages):
+        parts = []
+
+        for message in messages:
+            if message["role"] == "user":
+                role = "Пользователь"
+            else:
+                role = "Ассистент"
+
+            parts.append(
+                f"{role}: {message['text']}"
+            )
+
+        return "\n\n".join(parts)
+
+    # ---------------------------------------------------------
+    # STRATEGY 1 — SLIDING WINDOW
+    # ---------------------------------------------------------
+
+    def build_sliding_prompt(self, user_message):
+        recent_messages = self.messages[-self.window_size:]
+
+        history = self.messages_to_text(recent_messages)
+
+        return f"""
+Ты полезный AI-ассистент.
+
+История последних сообщений:
+
+{history}
+
+Пользователь: {user_message}
+Ассистент:
+""".strip()
+
+    # ---------------------------------------------------------
+    # STRATEGY 2 — STICKY FACTS
+    # ---------------------------------------------------------
+
+    def update_facts(self, user_message):
+        current_facts = json.dumps(
+            self.facts,
+            ensure_ascii=False,
+            indent=2
         )
 
-        self.last_output_tokens = (
-            output_tokens
+        prompt = f"""
+Ты управляешь памятью AI-агента.
+
+Текущие важные факты:
+
+{current_facts}
+
+Новое сообщение пользователя:
+
+{user_message}
+
+Извлеки только важные долгосрочные факты.
+
+Это могут быть:
+- цель проекта;
+- ограничения;
+- предпочтения;
+- технологии;
+- принятые решения;
+- договорённости;
+- важные требования.
+
+Не сохраняй приветствия, случайные фразы и обычные вопросы.
+
+Если новый факт изменяет старый — обнови его.
+
+Верни ТОЛЬКО JSON-объект со всеми актуальными фактами.
+
+Пример:
+
+{{
+    "platform": "Android",
+    "language": "Kotlin",
+    "min_android": "12"
+}}
+
+Если важных фактов нет, верни текущие факты без изменений.
+""".strip()
+
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level="minimal"
+                    )
+                )
+            )
+
+            new_facts = json.loads(response.text)
+
+            if isinstance(new_facts, dict):
+                self.facts = new_facts
+
+        except Exception as error:
+            print()
+            print("Не удалось обновить facts:")
+            print(error)
+
+    def build_facts_prompt(self, user_message):
+        recent_messages = self.messages[-self.window_size:]
+
+        history = self.messages_to_text(recent_messages)
+
+        facts_text = json.dumps(
+            self.facts,
+            ensure_ascii=False,
+            indent=2
         )
 
-        self.last_total_tokens = (
-            total_tokens
-        )
+        return f"""
+Ты полезный AI-ассистент.
 
-        self.last_request_time = (
-            gemini_time
+ВАЖНЫЕ ФАКТЫ:
+
+{facts_text}
+
+ПОСЛЕДНИЕ СООБЩЕНИЯ:
+
+{history}
+
+Пользователь: {user_message}
+Ассистент:
+""".strip()
+
+    # ---------------------------------------------------------
+    # STRATEGY 3 — BRANCHING
+    # ---------------------------------------------------------
+
+    def build_branching_prompt(self, user_message):
+        branch_messages = self.branches[
+            self.current_branch
+        ]
+
+        history = self.messages_to_text(branch_messages)
+
+        return f"""
+Ты полезный AI-ассистент.
+
+Текущая ветка диалога:
+{self.current_branch}
+
+История этой ветки:
+
+{history}
+
+Пользователь: {user_message}
+Ассистент:
+""".strip()
+
+    def create_branch(self, branch_name):
+        if branch_name in self.branches:
+            print()
+            print(
+                f"Ветка '{branch_name}' уже существует."
+            )
+            return
+
+        current_history = self.branches[
+            self.current_branch
+        ]
+
+        # checkpoint = копия текущего состояния ветки
+        self.branches[branch_name] = copy.deepcopy(
+            current_history
         )
 
         print()
+        print(
+            f"Создана ветка '{branch_name}' "
+            f"из '{self.current_branch}'."
+        )
+
+    def switch_branch(self, branch_name):
+        if branch_name not in self.branches:
+            print()
+            print(
+                f"Ветка '{branch_name}' не существует."
+            )
+            return
+
+        self.current_branch = branch_name
+
+        print()
+        print(
+            f"Переключились на ветку: {branch_name}"
+        )
+
+    # ---------------------------------------------------------
+    # ОСНОВНОЙ ЗАПРОС
+    # ---------------------------------------------------------
+
+    def ask(self, user_message):
+        print()
         print("-" * 60)
-        print("ТОКЕНЫ")
+        print("ЗАПРОС К GEMINI")
+        print("-" * 60)
+        print(f"Стратегия: {self.strategy}")
+
+        if self.strategy == "sliding":
+
+            prompt = self.build_sliding_prompt(
+                user_message
+            )
+
+        elif self.strategy == "facts":
+
+            print("Обновляем Sticky Facts...")
+
+            self.update_facts(user_message)
+
+            prompt = self.build_facts_prompt(
+                user_message
+            )
+
+        elif self.strategy == "branching":
+
+            print(
+                f"Текущая ветка: "
+                f"{self.current_branch}"
+            )
+
+            prompt = self.build_branching_prompt(
+                user_message
+            )
+
+        else:
+            raise ValueError(
+                "Неизвестная стратегия"
+            )
+
+        print("Отправляем запрос Gemini...")
+
+        answer = self.generate(prompt)
+
+        # Сохраняем сообщения
+        if self.strategy == "branching":
+
+            self.branches[
+                self.current_branch
+            ].append({
+                "role": "user",
+                "text": user_message
+            })
+
+            self.branches[
+                self.current_branch
+            ].append({
+                "role": "assistant",
+                "text": answer
+            })
+
+        else:
+
+            self.messages.append({
+                "role": "user",
+                "text": user_message
+            })
+
+            self.messages.append({
+                "role": "assistant",
+                "text": answer
+            })
+
+        print()
+        print("-" * 60)
+        print("СТАТИСТИКА")
         print("-" * 60)
 
         print(
             f"Входных токенов:   "
-            f"{input_tokens}"
+            f"{self.last_prompt_tokens}"
         )
 
         print(
             f"Токенов ответа:    "
-            f"{output_tokens}"
-        )
-
-        print(
-            f"Thinking tokens:   "
-            f"{thinking_tokens}"
+            f"{self.last_response_tokens}"
         )
 
         print(
             f"Всего токенов API: "
-            f"{total_tokens}"
+            f"{self.last_total_tokens}"
         )
 
-        print()
         print(
             f"Время Gemini:      "
-            f"{gemini_time:.2f} сек."
-        )
-
-        # -----------------------------------------------------
-        # СОХРАНЯЕМ ИСТОРИЮ
-        # -----------------------------------------------------
-
-        self.messages.append({
-            "role": "user",
-            "text": user_message
-        })
-
-        self.messages.append({
-            "role": "assistant",
-            "text": answer
-        })
-
-        self.save_history()
-
-        # -----------------------------------------------------
-        # ПРОВЕРЯЕМ, НУЖНО ЛИ СЖАТИЕ
-        # -----------------------------------------------------
-
-        self.compress_history()
-
-        total_time = (
-            time.perf_counter()
-            - total_start
-        )
-
-        print(
-            f"Общее время:       "
-            f"{total_time:.2f} сек."
+            f"{self.last_time:.2f} сек."
         )
 
         return answer
 
+    # ---------------------------------------------------------
+    # КОМАНДЫ
+    # ---------------------------------------------------------
 
-# =============================================================
-# HELP
-# =============================================================
+    def set_strategy(self, strategy):
+        allowed = [
+            "sliding",
+            "facts",
+            "branching"
+        ]
+
+        if strategy not in allowed:
+            print()
+            print("Неизвестная стратегия.")
+            print(
+                "Доступно: sliding, facts, branching"
+            )
+            return
+
+        self.strategy = strategy
+
+        print()
+        print(
+            f"Текущая стратегия: {strategy}"
+        )
+
+    def show_facts(self):
+        print()
+        print("=" * 60)
+        print("STICKY FACTS")
+        print("=" * 60)
+
+        if not self.facts:
+            print("Facts пока пусты.")
+            return
+
+        print(
+            json.dumps(
+                self.facts,
+                ensure_ascii=False,
+                indent=2
+            )
+        )
+
+    def show_branches(self):
+        print()
+        print("=" * 60)
+        print("ВЕТКИ")
+        print("=" * 60)
+
+        for name, messages in self.branches.items():
+
+            marker = ""
+
+            if name == self.current_branch:
+                marker = " <-- текущая"
+
+            print(
+                f"{name}: "
+                f"{len(messages)} сообщений"
+                f"{marker}"
+            )
+
+    def show_stats(self):
+        print()
+        print("=" * 60)
+        print("СТАТИСТИКА")
+        print("=" * 60)
+
+        print(
+            f"Стратегия:          "
+            f"{self.strategy}"
+        )
+
+        print(
+            f"Sliding Window:      "
+            f"{self.window_size} сообщений"
+        )
+
+        print(
+            f"Обычная история:     "
+            f"{len(self.messages)} сообщений"
+        )
+
+        print(
+            f"Sticky Facts:        "
+            f"{len(self.facts)}"
+        )
+
+        print(
+            f"Текущая ветка:       "
+            f"{self.current_branch}"
+        )
+
+        print(
+            f"Количество веток:    "
+            f"{len(self.branches)}"
+        )
+
+        print()
+        print("Последний запрос:")
+
+        print(
+            f"Входных токенов:     "
+            f"{self.last_prompt_tokens}"
+        )
+
+        print(
+            f"Токенов ответа:      "
+            f"{self.last_response_tokens}"
+        )
+
+        print(
+            f"Всего токенов API:   "
+            f"{self.last_total_tokens}"
+        )
+
+    def clear(self):
+        self.messages = []
+        self.facts = {}
+
+        self.branches = {
+            "main": []
+        }
+
+        self.current_branch = "main"
+
+        print()
+        print("Память агента очищена.")
+
 
 def show_help():
     print()
     print("=" * 60)
-    print("ДОСТУПНЫЕ КОМАНДЫ")
+    print("ДЕНЬ 10 — КОМАНДЫ")
     print("=" * 60)
 
-    print(
-        "  help     — показать подсказку"
-    )
+    print("""
+strategy
+    показать текущую стратегию
 
-    print(
-        "  stats    — показать статистику"
-    )
+strategy sliding
+    Sliding Window
 
-    print(
-        "  summary  — показать summary"
-    )
+strategy facts
+    Sticky Facts
 
-    print(
-        "  clear    — очистить историю и summary"
-    )
+strategy branching
+    Branching
 
-    print(
-        "  exit     — завершить программу"
-    )
+facts
+    показать сохранённые факты
 
-    print()
-    print(
-        "Любой другой текст "
-        "будет отправлен агенту."
-    )
+branch <имя>
+    создать новую ветку из текущей
 
-    print("=" * 60)
+switch <имя>
+    переключиться на ветку
 
+branches
+    показать все ветки
 
-# =============================================================
-# MAIN
-# =============================================================
+stats
+    показать статистику
+
+clear
+    очистить память
+
+help
+    показать команды
+
+exit
+    завершить программу
+""")
+
 
 def main():
     agent = GeminiAgent()
 
     print("=" * 60)
-    print("ДЕНЬ 9 — УПРАВЛЕНИЕ КОНТЕКСТОМ")
+    print("ДЕНЬ 10 — СТРАТЕГИИ УПРАВЛЕНИЯ КОНТЕКСТОМ")
     print("=" * 60)
 
     print()
-
-    print(
-        f"Модель:                     "
-        f"{agent.model}"
-    )
-
-    print(
-        "Thinking level:             minimal"
-    )
-
-    print(
-        f"Последних сообщений храним: "
-        f"{agent.keep_last}"
-    )
-
-    print(
-        f"Сжимаем за один раз:        "
-        f"{agent.compress_every}"
-    )
-
-    print(
-        f"Сообщений загружено:        "
-        f"{len(agent.messages)}"
-    )
-
-    print(
-        f"Summary существует:         "
-        f"{'Да' if agent.summary else 'Нет'}"
-    )
+    print(f"Модель:         {agent.model}")
+    print(f"Window size:    {agent.window_size}")
+    print(f"Стратегия:      {agent.strategy}")
 
     show_help()
 
     while True:
+
         print()
+        user_input = input("Вы: ").strip()
 
-        user_message = input(
-            "Вы: "
-        ).strip()
-
-        if not user_message:
+        if not user_input:
             continue
 
-        command = user_message.lower()
-
-        # EXIT
-        if command == "exit":
+        if user_input.lower() == "exit":
             print()
-            print(
-                "Агент: До свидания!"
-            )
+            print("Агент: До свидания!")
             break
 
-        # HELP
-        if command == "help":
+        if user_input.lower() == "help":
             show_help()
             continue
 
-        # STATS
-        if command == "stats":
+        if user_input.lower() == "stats":
             agent.show_stats()
             continue
 
-        # SUMMARY
-        if command == "summary":
-            agent.show_summary()
+        if user_input.lower() == "facts":
+            agent.show_facts()
             continue
 
-        # CLEAR
-        if command == "clear":
-            agent.clear()
+        if user_input.lower() == "branches":
+            agent.show_branches()
+            continue
 
+        if user_input.lower() == "clear":
+            agent.clear()
+            continue
+
+        if user_input.lower() == "strategy":
             print()
             print(
-                "История и summary очищены."
+                f"Текущая стратегия: "
+                f"{agent.strategy}"
             )
-
             continue
 
-        # ОБЫЧНЫЙ ЗАПРОС
+        if user_input.lower().startswith(
+            "strategy "
+        ):
+            strategy = user_input.split(
+                maxsplit=1
+            )[1].lower()
+
+            agent.set_strategy(strategy)
+            continue
+
+        if user_input.lower().startswith(
+            "branch "
+        ):
+            branch_name = user_input.split(
+                maxsplit=1
+            )[1]
+
+            agent.create_branch(branch_name)
+            continue
+
+        if user_input.lower().startswith(
+            "switch "
+        ):
+            branch_name = user_input.split(
+                maxsplit=1
+            )[1]
+
+            agent.switch_branch(branch_name)
+            continue
+
         try:
-            answer = agent.ask(
-                user_message
-            )
+            answer = agent.ask(user_input)
 
             print()
             print("Агент:")
@@ -704,9 +644,7 @@ def main():
 
         except Exception as error:
             print()
-            print(
-                "Ошибка при обращении к API:"
-            )
+            print("Ошибка:")
             print(error)
 
 
