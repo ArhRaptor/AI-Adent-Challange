@@ -16,11 +16,14 @@ class GeminiAgent:
         self.model = model
         self.short_term_limit = short_term_limit
 
+        # Memory files
         self.short_term_file = "short_term_memory.json"
         self.working_file = "working_memory.json"
         self.long_term_file = "long_term_memory.json"
 
-        # Три независимых слоя памяти
+        # Profiles file
+        self.profiles_file = "profiles.json"
+
         self.short_term_memory = self.load_json(
             self.short_term_file,
             []
@@ -36,7 +39,44 @@ class GeminiAgent:
             {}
         )
 
-        # Статистика последнего запроса
+        # Несколько профилей для демонстрации персонализации
+        default_profiles = {
+            "beginner": {
+                "name": "Начинающий разработчик",
+                "style": "дружелюбный и обучающий",
+                "format": "пошаговые объяснения с простыми примерами",
+                "detail_level": "подробно",
+                "constraints": [
+                    "не использовать сложные термины без объяснения",
+                    "код объяснять простыми словами"
+                ]
+            },
+
+            "expert": {
+                "name": "Опытный разработчик",
+                "style": "технический и прямой",
+                "format": "краткие технические ответы",
+                "detail_level": "кратко",
+                "constraints": [
+                    "не объяснять базовые понятия",
+                    "минимум вводного текста"
+                ]
+            }
+        }
+
+        self.profiles = self.load_json(
+            self.profiles_file,
+            default_profiles
+        )
+
+        self.current_profile = "beginner"
+
+        self.save_json(
+            self.profiles_file,
+            self.profiles
+        )
+
+        # Statistics
         self.last_prompt_tokens = 0
         self.last_response_tokens = 0
         self.last_total_tokens = 0
@@ -87,7 +127,6 @@ class GeminiAgent:
             "text": text
         })
 
-        # Храним только последние N сообщений
         self.short_term_memory = (
             self.short_term_memory[
                 -self.short_term_limit:
@@ -132,6 +171,79 @@ class GeminiAgent:
         print(f"{key} = {value}")
 
     # ---------------------------------------------------------
+    # USER PROFILE
+    # ---------------------------------------------------------
+
+    def show_profile(self):
+        profile = self.profiles[
+            self.current_profile
+        ]
+
+        print()
+        print("=" * 60)
+        print("ТЕКУЩИЙ ПРОФИЛЬ")
+        print("=" * 60)
+
+        print(
+            f"ID: {self.current_profile}"
+        )
+
+        print(
+            json.dumps(
+                profile,
+                ensure_ascii=False,
+                indent=2
+            )
+        )
+
+    def show_profiles(self):
+        print()
+        print("=" * 60)
+        print("ПРОФИЛИ")
+        print("=" * 60)
+
+        for profile_id, profile in self.profiles.items():
+
+            marker = ""
+
+            if profile_id == self.current_profile:
+                marker = " <-- текущий"
+
+            print(
+                f"{profile_id}: "
+                f"{profile['name']}"
+                f"{marker}"
+            )
+
+    def switch_profile(self, profile_id):
+        if profile_id not in self.profiles:
+            print()
+            print(
+                f"Профиль '{profile_id}' "
+                f"не найден."
+            )
+            return
+
+        self.current_profile = profile_id
+
+        print()
+        print(
+            f"Выбран профиль: "
+            f"{profile_id}"
+        )
+
+    def profile_to_text(self):
+        profile = self.profiles[
+            self.current_profile
+        ]
+
+        return json.dumps(
+            profile,
+            ensure_ascii=False,
+            indent=2
+        )
+
+    # ---------------------------------------------------------
     # PROMPT
     # ---------------------------------------------------------
 
@@ -152,6 +264,8 @@ class GeminiAgent:
         return "\n\n".join(parts)
 
     def build_prompt(self, user_message):
+        profile = self.profile_to_text()
+
         short_term = self.short_term_to_text()
 
         working = json.dumps(
@@ -167,30 +281,41 @@ class GeminiAgent:
         )
 
         return f"""
-Ты полезный AI-ассистент.
+Ты персонализированный AI-ассистент.
 
-У тебя есть три отдельных слоя памяти.
+ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ:
+
+{profile}
+
+Адаптируй каждый ответ под этот профиль.
+
+Учитывай:
+- стиль общения;
+- требуемый формат ответа;
+- уровень детализации;
+- ограничения пользователя.
+
+Не сообщай пользователю о профиле без необходимости.
+Просто автоматически следуй его настройкам.
+
 
 ДОЛГОВРЕМЕННАЯ ПАМЯТЬ:
-Постоянные предпочтения, профиль и важные решения пользователя.
 
 {long_term}
 
 
 РАБОЧАЯ ПАМЯТЬ:
-Информация, относящаяся к текущей задаче или проекту.
 
 {working}
 
 
 КРАТКОСРОЧНАЯ ПАМЯТЬ:
-Последние сообщения текущего диалога.
 
 {short_term}
 
 
-Используй эту память при ответе.
-Не придумывай отсутствующие в памяти факты.
+Используй информацию из памяти при ответе.
+Не придумывай отсутствующие факты.
 
 Пользователь: {user_message}
 Ассистент:
@@ -209,6 +334,11 @@ class GeminiAgent:
         print("-" * 60)
         print("ЗАПРОС К GEMINI")
         print("-" * 60)
+
+        print(
+            f"Профиль:    "
+            f"{self.current_profile}"
+        )
 
         print(
             f"Short-term: "
@@ -257,8 +387,6 @@ class GeminiAgent:
 
         answer = response.text
 
-        # Обычный диалог автоматически
-        # сохраняется только в short-term.
         self.add_short_term(
             "user",
             user_message
@@ -297,83 +425,31 @@ class GeminiAgent:
         return answer
 
     # ---------------------------------------------------------
-    # ПРОСМОТР ПАМЯТИ
+    # MEMORY VIEW
     # ---------------------------------------------------------
 
     def show_memory(self):
         print()
         print("=" * 60)
-        print("МОДЕЛЬ ПАМЯТИ АГЕНТА")
+        print("МОДЕЛЬ ПАМЯТИ")
         print("=" * 60)
 
         print()
-        print("1. SHORT-TERM MEMORY")
-        print("-" * 60)
-
-        if not self.short_term_memory:
-            print("Пусто")
-
-        for message in self.short_term_memory:
-            print(
-                f"{message['role']}: "
-                f"{message['text']}"
-            )
-
-        print()
-        print("2. WORKING MEMORY")
-        print("-" * 60)
-
-        if not self.working_memory:
-            print("Пусто")
-        else:
-            print(
-                json.dumps(
-                    self.working_memory,
-                    ensure_ascii=False,
-                    indent=2
-                )
-            )
-
-        print()
-        print("3. LONG-TERM MEMORY")
-        print("-" * 60)
-
-        if not self.long_term_memory:
-            print("Пусто")
-        else:
-            print(
-                json.dumps(
-                    self.long_term_memory,
-                    ensure_ascii=False,
-                    indent=2
-                )
-            )
-
-    def show_short(self):
-        print()
-        print("=" * 60)
         print("SHORT-TERM MEMORY")
-        print("=" * 60)
+        print("-" * 60)
 
         if not self.short_term_memory:
             print("Пусто")
-            return
+        else:
+            for message in self.short_term_memory:
+                print(
+                    f"{message['role']}: "
+                    f"{message['text']}"
+                )
 
-        for message in self.short_term_memory:
-            print(
-                f"{message['role']}: "
-                f"{message['text']}"
-            )
-
-    def show_working(self):
         print()
-        print("=" * 60)
         print("WORKING MEMORY")
-        print("=" * 60)
-
-        if not self.working_memory:
-            print("Пусто")
-            return
+        print("-" * 60)
 
         print(
             json.dumps(
@@ -383,15 +459,9 @@ class GeminiAgent:
             )
         )
 
-    def show_long_term(self):
         print()
-        print("=" * 60)
         print("LONG-TERM MEMORY")
-        print("=" * 60)
-
-        if not self.long_term_memory:
-            print("Пусто")
-            return
+        print("-" * 60)
 
         print(
             json.dumps(
@@ -402,7 +472,7 @@ class GeminiAgent:
         )
 
     # ---------------------------------------------------------
-    # ОЧИСТКА ПАМЯТИ
+    # CLEAR
     # ---------------------------------------------------------
 
     def clear_short(self):
@@ -445,6 +515,11 @@ class GeminiAgent:
         print("=" * 60)
 
         print(
+            f"Профиль:              "
+            f"{self.current_profile}"
+        )
+
+        print(
             f"Short-term сообщений: "
             f"{len(self.short_term_memory)}"
         )
@@ -479,20 +554,6 @@ class GeminiAgent:
 
 
 def parse_memory_command(text):
-    """
-    Получает строку вида:
-
-    remember work min_android=12
-
-    или:
-
-    remember long language=Kotlin
-
-    Возвращает:
-
-    memory_type, key, value
-    """
-
     parts = text.split(
         maxsplit=2
     )
@@ -521,42 +582,35 @@ def parse_memory_command(text):
 def show_help():
     print()
     print("=" * 60)
-    print("ДЕНЬ 11 — МОДЕЛЬ ПАМЯТИ АГЕНТА")
+    print("ДЕНЬ 12 — ПЕРСОНАЛИЗАЦИЯ")
     print("=" * 60)
 
     print("""
-Обычное сообщение
-    автоматически попадает в short-term memory
+profile
+    показать текущий профиль
+
+profiles
+    показать все профили
+
+profile beginner
+    включить профиль начинающего
+
+profile expert
+    включить профиль эксперта
 
 
 remember work <ключ>=<значение>
-    сохранить факт текущей задачи
-
-Пример:
-remember work min_android=12
-
+    сохранить данные текущей задачи
 
 remember long <ключ>=<значение>
-    сохранить долговременный факт
-
-Пример:
-remember long preferred_language=Kotlin
+    сохранить долговременные данные
 
 
 memory
-    показать все слои памяти
-
-short
-    показать short-term memory
-
-work
-    показать working memory
-
-long
-    показать long-term memory
+    показать память
 
 clear short
-    очистить краткосрочную память
+    очистить текущий диалог
 
 clear work
     очистить рабочую память
@@ -571,7 +625,7 @@ help
     показать команды
 
 exit
-    выход
+    завершить программу
 """)
 
 
@@ -579,17 +633,17 @@ def main():
     agent = GeminiAgent()
 
     print("=" * 60)
-    print("ДЕНЬ 11 — МОДЕЛЬ ПАМЯТИ АГЕНТА")
+    print("ДЕНЬ 12 — ПЕРСОНАЛИЗИРОВАННЫЙ АГЕНТ")
     print("=" * 60)
 
     print()
-    print(f"Модель: {agent.model}")
+    print(
+        f"Модель:  {agent.model}"
+    )
 
-    print()
-    print("Memory layers:")
-    print("1. Short-term")
-    print("2. Working")
-    print("3. Long-term")
+    print(
+        f"Профиль: {agent.current_profile}"
+    )
 
     show_help()
 
@@ -614,20 +668,27 @@ def main():
             show_help()
             continue
 
+        if command == "profile":
+            agent.show_profile()
+            continue
+
+        if command == "profiles":
+            agent.show_profiles()
+            continue
+
+        if command.startswith("profile "):
+            profile_id = user_input.split(
+                maxsplit=1
+            )[1].strip().lower()
+
+            agent.switch_profile(
+                profile_id
+            )
+
+            continue
+
         if command == "memory":
             agent.show_memory()
-            continue
-
-        if command == "short":
-            agent.show_short()
-            continue
-
-        if command == "work":
-            agent.show_working()
-            continue
-
-        if command == "long":
-            agent.show_long_term()
             continue
 
         if command == "stats":
@@ -646,9 +707,7 @@ def main():
             agent.clear_long_term()
             continue
 
-        if command.startswith(
-            "remember "
-        ):
+        if command.startswith("remember "):
             result = parse_memory_command(
                 user_input
             )
@@ -656,18 +715,15 @@ def main():
             if result is None:
                 print()
                 print(
-                    "Неверный формат команды."
+                    "Неверный формат."
                 )
-
                 print(
                     "Пример:"
                 )
-
                 print(
                     "remember work "
                     "min_android=12"
                 )
-
                 continue
 
             memory_type, key, value = result
@@ -689,8 +745,7 @@ def main():
             else:
                 print()
                 print(
-                    "Тип памяти должен быть "
-                    "'work' или 'long'."
+                    "Используй work или long."
                 )
 
             continue
