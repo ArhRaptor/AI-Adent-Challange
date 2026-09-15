@@ -1,0 +1,5 @@
+{
+  "project": "Android-приложение для склада",
+  "min_android": "12",
+  "architecture": "MVVM"
+}

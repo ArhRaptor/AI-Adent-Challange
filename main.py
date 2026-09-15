@@ -1,7 +1,6 @@
 from google import genai
 from google.genai import types
 
-import copy
 import json
 import os
 import time
@@ -11,38 +10,221 @@ class GeminiAgent:
     def __init__(
         self,
         model="gemini-3.5-flash-lite",
-        window_size=6
+        short_term_limit=6
     ):
         self.client = genai.Client()
         self.model = model
-        self.window_size = window_size
+        self.short_term_limit = short_term_limit
 
-        # Текущая стратегия
-        self.strategy = "sliding"
+        self.short_term_file = "short_term_memory.json"
+        self.working_file = "working_memory.json"
+        self.long_term_file = "long_term_memory.json"
 
-        # Обычная история
-        self.messages = []
+        # Три независимых слоя памяти
+        self.short_term_memory = self.load_json(
+            self.short_term_file,
+            []
+        )
 
-        # Sticky Facts
-        self.facts = {}
+        self.working_memory = self.load_json(
+            self.working_file,
+            {}
+        )
 
-        # Branching
-        self.branches = {
-            "main": []
-        }
-        self.current_branch = "main"
+        self.long_term_memory = self.load_json(
+            self.long_term_file,
+            {}
+        )
 
-        # Последняя статистика
+        # Статистика последнего запроса
         self.last_prompt_tokens = 0
         self.last_response_tokens = 0
         self.last_total_tokens = 0
         self.last_time = 0
 
     # ---------------------------------------------------------
-    # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+    # JSON
     # ---------------------------------------------------------
 
-    def generate(self, prompt):
+    def load_json(self, filename, default_value):
+        if not os.path.exists(filename):
+            return default_value
+
+        try:
+            with open(
+                filename,
+                "r",
+                encoding="utf-8"
+            ) as file:
+                return json.load(file)
+
+        except (
+            json.JSONDecodeError,
+            OSError
+        ):
+            return default_value
+
+    def save_json(self, filename, data):
+        with open(
+            filename,
+            "w",
+            encoding="utf-8"
+        ) as file:
+            json.dump(
+                data,
+                file,
+                ensure_ascii=False,
+                indent=2
+            )
+
+    # ---------------------------------------------------------
+    # SHORT-TERM MEMORY
+    # ---------------------------------------------------------
+
+    def add_short_term(self, role, text):
+        self.short_term_memory.append({
+            "role": role,
+            "text": text
+        })
+
+        # Храним только последние N сообщений
+        self.short_term_memory = (
+            self.short_term_memory[
+                -self.short_term_limit:
+            ]
+        )
+
+        self.save_json(
+            self.short_term_file,
+            self.short_term_memory
+        )
+
+    # ---------------------------------------------------------
+    # WORKING MEMORY
+    # ---------------------------------------------------------
+
+    def remember_working(self, key, value):
+        self.working_memory[key] = value
+
+        self.save_json(
+            self.working_file,
+            self.working_memory
+        )
+
+        print()
+        print("Сохранено в WORKING MEMORY:")
+        print(f"{key} = {value}")
+
+    # ---------------------------------------------------------
+    # LONG-TERM MEMORY
+    # ---------------------------------------------------------
+
+    def remember_long_term(self, key, value):
+        self.long_term_memory[key] = value
+
+        self.save_json(
+            self.long_term_file,
+            self.long_term_memory
+        )
+
+        print()
+        print("Сохранено в LONG-TERM MEMORY:")
+        print(f"{key} = {value}")
+
+    # ---------------------------------------------------------
+    # PROMPT
+    # ---------------------------------------------------------
+
+    def short_term_to_text(self):
+        parts = []
+
+        for message in self.short_term_memory:
+
+            if message["role"] == "user":
+                role = "Пользователь"
+            else:
+                role = "Ассистент"
+
+            parts.append(
+                f"{role}: {message['text']}"
+            )
+
+        return "\n\n".join(parts)
+
+    def build_prompt(self, user_message):
+        short_term = self.short_term_to_text()
+
+        working = json.dumps(
+            self.working_memory,
+            ensure_ascii=False,
+            indent=2
+        )
+
+        long_term = json.dumps(
+            self.long_term_memory,
+            ensure_ascii=False,
+            indent=2
+        )
+
+        return f"""
+Ты полезный AI-ассистент.
+
+У тебя есть три отдельных слоя памяти.
+
+ДОЛГОВРЕМЕННАЯ ПАМЯТЬ:
+Постоянные предпочтения, профиль и важные решения пользователя.
+
+{long_term}
+
+
+РАБОЧАЯ ПАМЯТЬ:
+Информация, относящаяся к текущей задаче или проекту.
+
+{working}
+
+
+КРАТКОСРОЧНАЯ ПАМЯТЬ:
+Последние сообщения текущего диалога.
+
+{short_term}
+
+
+Используй эту память при ответе.
+Не придумывай отсутствующие в памяти факты.
+
+Пользователь: {user_message}
+Ассистент:
+""".strip()
+
+    # ---------------------------------------------------------
+    # GEMINI
+    # ---------------------------------------------------------
+
+    def ask(self, user_message):
+        prompt = self.build_prompt(
+            user_message
+        )
+
+        print()
+        print("-" * 60)
+        print("ЗАПРОС К GEMINI")
+        print("-" * 60)
+
+        print(
+            f"Short-term: "
+            f"{len(self.short_term_memory)} сообщений"
+        )
+
+        print(
+            f"Working:    "
+            f"{len(self.working_memory)} фактов"
+        )
+
+        print(
+            f"Long-term:  "
+            f"{len(self.long_term_memory)} фактов"
+        )
+
         start = time.perf_counter()
 
         response = self.client.models.generate_content(
@@ -55,7 +237,9 @@ class GeminiAgent:
             )
         )
 
-        elapsed = time.perf_counter() - start
+        self.last_time = (
+            time.perf_counter() - start
+        )
 
         usage = response.usage_metadata
 
@@ -71,281 +255,19 @@ class GeminiAgent:
             usage.total_token_count or 0
         )
 
-        self.last_time = elapsed
+        answer = response.text
 
-        return response.text
-
-    def messages_to_text(self, messages):
-        parts = []
-
-        for message in messages:
-            if message["role"] == "user":
-                role = "Пользователь"
-            else:
-                role = "Ассистент"
-
-            parts.append(
-                f"{role}: {message['text']}"
-            )
-
-        return "\n\n".join(parts)
-
-    # ---------------------------------------------------------
-    # STRATEGY 1 — SLIDING WINDOW
-    # ---------------------------------------------------------
-
-    def build_sliding_prompt(self, user_message):
-        recent_messages = self.messages[-self.window_size:]
-
-        history = self.messages_to_text(recent_messages)
-
-        return f"""
-Ты полезный AI-ассистент.
-
-История последних сообщений:
-
-{history}
-
-Пользователь: {user_message}
-Ассистент:
-""".strip()
-
-    # ---------------------------------------------------------
-    # STRATEGY 2 — STICKY FACTS
-    # ---------------------------------------------------------
-
-    def update_facts(self, user_message):
-        current_facts = json.dumps(
-            self.facts,
-            ensure_ascii=False,
-            indent=2
+        # Обычный диалог автоматически
+        # сохраняется только в short-term.
+        self.add_short_term(
+            "user",
+            user_message
         )
 
-        prompt = f"""
-Ты управляешь памятью AI-агента.
-
-Текущие важные факты:
-
-{current_facts}
-
-Новое сообщение пользователя:
-
-{user_message}
-
-Извлеки только важные долгосрочные факты.
-
-Это могут быть:
-- цель проекта;
-- ограничения;
-- предпочтения;
-- технологии;
-- принятые решения;
-- договорённости;
-- важные требования.
-
-Не сохраняй приветствия, случайные фразы и обычные вопросы.
-
-Если новый факт изменяет старый — обнови его.
-
-Верни ТОЛЬКО JSON-объект со всеми актуальными фактами.
-
-Пример:
-
-{{
-    "platform": "Android",
-    "language": "Kotlin",
-    "min_android": "12"
-}}
-
-Если важных фактов нет, верни текущие факты без изменений.
-""".strip()
-
-        try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    thinking_config=types.ThinkingConfig(
-                        thinking_level="minimal"
-                    )
-                )
-            )
-
-            new_facts = json.loads(response.text)
-
-            if isinstance(new_facts, dict):
-                self.facts = new_facts
-
-        except Exception as error:
-            print()
-            print("Не удалось обновить facts:")
-            print(error)
-
-    def build_facts_prompt(self, user_message):
-        recent_messages = self.messages[-self.window_size:]
-
-        history = self.messages_to_text(recent_messages)
-
-        facts_text = json.dumps(
-            self.facts,
-            ensure_ascii=False,
-            indent=2
+        self.add_short_term(
+            "assistant",
+            answer
         )
-
-        return f"""
-Ты полезный AI-ассистент.
-
-ВАЖНЫЕ ФАКТЫ:
-
-{facts_text}
-
-ПОСЛЕДНИЕ СООБЩЕНИЯ:
-
-{history}
-
-Пользователь: {user_message}
-Ассистент:
-""".strip()
-
-    # ---------------------------------------------------------
-    # STRATEGY 3 — BRANCHING
-    # ---------------------------------------------------------
-
-    def build_branching_prompt(self, user_message):
-        branch_messages = self.branches[
-            self.current_branch
-        ]
-
-        history = self.messages_to_text(branch_messages)
-
-        return f"""
-Ты полезный AI-ассистент.
-
-Текущая ветка диалога:
-{self.current_branch}
-
-История этой ветки:
-
-{history}
-
-Пользователь: {user_message}
-Ассистент:
-""".strip()
-
-    def create_branch(self, branch_name):
-        if branch_name in self.branches:
-            print()
-            print(
-                f"Ветка '{branch_name}' уже существует."
-            )
-            return
-
-        current_history = self.branches[
-            self.current_branch
-        ]
-
-        # checkpoint = копия текущего состояния ветки
-        self.branches[branch_name] = copy.deepcopy(
-            current_history
-        )
-
-        print()
-        print(
-            f"Создана ветка '{branch_name}' "
-            f"из '{self.current_branch}'."
-        )
-
-    def switch_branch(self, branch_name):
-        if branch_name not in self.branches:
-            print()
-            print(
-                f"Ветка '{branch_name}' не существует."
-            )
-            return
-
-        self.current_branch = branch_name
-
-        print()
-        print(
-            f"Переключились на ветку: {branch_name}"
-        )
-
-    # ---------------------------------------------------------
-    # ОСНОВНОЙ ЗАПРОС
-    # ---------------------------------------------------------
-
-    def ask(self, user_message):
-        print()
-        print("-" * 60)
-        print("ЗАПРОС К GEMINI")
-        print("-" * 60)
-        print(f"Стратегия: {self.strategy}")
-
-        if self.strategy == "sliding":
-
-            prompt = self.build_sliding_prompt(
-                user_message
-            )
-
-        elif self.strategy == "facts":
-
-            print("Обновляем Sticky Facts...")
-
-            self.update_facts(user_message)
-
-            prompt = self.build_facts_prompt(
-                user_message
-            )
-
-        elif self.strategy == "branching":
-
-            print(
-                f"Текущая ветка: "
-                f"{self.current_branch}"
-            )
-
-            prompt = self.build_branching_prompt(
-                user_message
-            )
-
-        else:
-            raise ValueError(
-                "Неизвестная стратегия"
-            )
-
-        print("Отправляем запрос Gemini...")
-
-        answer = self.generate(prompt)
-
-        # Сохраняем сообщения
-        if self.strategy == "branching":
-
-            self.branches[
-                self.current_branch
-            ].append({
-                "role": "user",
-                "text": user_message
-            })
-
-            self.branches[
-                self.current_branch
-            ].append({
-                "role": "assistant",
-                "text": answer
-            })
-
-        else:
-
-            self.messages.append({
-                "role": "user",
-                "text": user_message
-            })
-
-            self.messages.append({
-                "role": "assistant",
-                "text": answer
-            })
 
         print()
         print("-" * 60)
@@ -375,67 +297,146 @@ class GeminiAgent:
         return answer
 
     # ---------------------------------------------------------
-    # КОМАНДЫ
+    # ПРОСМОТР ПАМЯТИ
     # ---------------------------------------------------------
 
-    def set_strategy(self, strategy):
-        allowed = [
-            "sliding",
-            "facts",
-            "branching"
-        ]
+    def show_memory(self):
+        print()
+        print("=" * 60)
+        print("МОДЕЛЬ ПАМЯТИ АГЕНТА")
+        print("=" * 60)
 
-        if strategy not in allowed:
-            print()
-            print("Неизвестная стратегия.")
+        print()
+        print("1. SHORT-TERM MEMORY")
+        print("-" * 60)
+
+        if not self.short_term_memory:
+            print("Пусто")
+
+        for message in self.short_term_memory:
             print(
-                "Доступно: sliding, facts, branching"
+                f"{message['role']}: "
+                f"{message['text']}"
             )
+
+        print()
+        print("2. WORKING MEMORY")
+        print("-" * 60)
+
+        if not self.working_memory:
+            print("Пусто")
+        else:
+            print(
+                json.dumps(
+                    self.working_memory,
+                    ensure_ascii=False,
+                    indent=2
+                )
+            )
+
+        print()
+        print("3. LONG-TERM MEMORY")
+        print("-" * 60)
+
+        if not self.long_term_memory:
+            print("Пусто")
+        else:
+            print(
+                json.dumps(
+                    self.long_term_memory,
+                    ensure_ascii=False,
+                    indent=2
+                )
+            )
+
+    def show_short(self):
+        print()
+        print("=" * 60)
+        print("SHORT-TERM MEMORY")
+        print("=" * 60)
+
+        if not self.short_term_memory:
+            print("Пусто")
             return
 
-        self.strategy = strategy
+        for message in self.short_term_memory:
+            print(
+                f"{message['role']}: "
+                f"{message['text']}"
+            )
 
-        print()
-        print(
-            f"Текущая стратегия: {strategy}"
-        )
-
-    def show_facts(self):
+    def show_working(self):
         print()
         print("=" * 60)
-        print("STICKY FACTS")
+        print("WORKING MEMORY")
         print("=" * 60)
 
-        if not self.facts:
-            print("Facts пока пусты.")
+        if not self.working_memory:
+            print("Пусто")
             return
 
         print(
             json.dumps(
-                self.facts,
+                self.working_memory,
                 ensure_ascii=False,
                 indent=2
             )
         )
 
-    def show_branches(self):
+    def show_long_term(self):
         print()
         print("=" * 60)
-        print("ВЕТКИ")
+        print("LONG-TERM MEMORY")
         print("=" * 60)
 
-        for name, messages in self.branches.items():
+        if not self.long_term_memory:
+            print("Пусто")
+            return
 
-            marker = ""
-
-            if name == self.current_branch:
-                marker = " <-- текущая"
-
-            print(
-                f"{name}: "
-                f"{len(messages)} сообщений"
-                f"{marker}"
+        print(
+            json.dumps(
+                self.long_term_memory,
+                ensure_ascii=False,
+                indent=2
             )
+        )
+
+    # ---------------------------------------------------------
+    # ОЧИСТКА ПАМЯТИ
+    # ---------------------------------------------------------
+
+    def clear_short(self):
+        self.short_term_memory = []
+
+        self.save_json(
+            self.short_term_file,
+            self.short_term_memory
+        )
+
+        print()
+        print("Short-term memory очищена.")
+
+    def clear_working(self):
+        self.working_memory = {}
+
+        self.save_json(
+            self.working_file,
+            self.working_memory
+        )
+
+        print()
+        print("Working memory очищена.")
+
+    def clear_long_term(self):
+        self.long_term_memory = {}
+
+        self.save_json(
+            self.long_term_file,
+            self.long_term_memory
+        )
+
+        print()
+        print("Long-term memory очищена.")
 
     def show_stats(self):
         print()
@@ -444,109 +445,133 @@ class GeminiAgent:
         print("=" * 60)
 
         print(
-            f"Стратегия:          "
-            f"{self.strategy}"
+            f"Short-term сообщений: "
+            f"{len(self.short_term_memory)}"
         )
 
         print(
-            f"Sliding Window:      "
-            f"{self.window_size} сообщений"
+            f"Working фактов:        "
+            f"{len(self.working_memory)}"
         )
 
         print(
-            f"Обычная история:     "
-            f"{len(self.messages)} сообщений"
-        )
-
-        print(
-            f"Sticky Facts:        "
-            f"{len(self.facts)}"
-        )
-
-        print(
-            f"Текущая ветка:       "
-            f"{self.current_branch}"
-        )
-
-        print(
-            f"Количество веток:    "
-            f"{len(self.branches)}"
+            f"Long-term фактов:      "
+            f"{len(self.long_term_memory)}"
         )
 
         print()
         print("Последний запрос:")
 
         print(
-            f"Входных токенов:     "
+            f"Входных токенов:       "
             f"{self.last_prompt_tokens}"
         )
 
         print(
-            f"Токенов ответа:      "
+            f"Токенов ответа:        "
             f"{self.last_response_tokens}"
         )
 
         print(
-            f"Всего токенов API:   "
+            f"Всего токенов API:     "
             f"{self.last_total_tokens}"
         )
 
-    def clear(self):
-        self.messages = []
-        self.facts = {}
 
-        self.branches = {
-            "main": []
-        }
+def parse_memory_command(text):
+    """
+    Получает строку вида:
 
-        self.current_branch = "main"
+    remember work min_android=12
 
-        print()
-        print("Память агента очищена.")
+    или:
+
+    remember long language=Kotlin
+
+    Возвращает:
+
+    memory_type, key, value
+    """
+
+    parts = text.split(
+        maxsplit=2
+    )
+
+    if len(parts) < 3:
+        return None
+
+    memory_type = parts[1]
+    data = parts[2]
+
+    if "=" not in data:
+        return None
+
+    key, value = data.split(
+        "=",
+        maxsplit=1
+    )
+
+    return (
+        memory_type.strip().lower(),
+        key.strip(),
+        value.strip()
+    )
 
 
 def show_help():
     print()
     print("=" * 60)
-    print("ДЕНЬ 10 — КОМАНДЫ")
+    print("ДЕНЬ 11 — МОДЕЛЬ ПАМЯТИ АГЕНТА")
     print("=" * 60)
 
     print("""
-strategy
-    показать текущую стратегию
+Обычное сообщение
+    автоматически попадает в short-term memory
 
-strategy sliding
-    Sliding Window
 
-strategy facts
-    Sticky Facts
+remember work <ключ>=<значение>
+    сохранить факт текущей задачи
 
-strategy branching
-    Branching
+Пример:
+remember work min_android=12
 
-facts
-    показать сохранённые факты
 
-branch <имя>
-    создать новую ветку из текущей
+remember long <ключ>=<значение>
+    сохранить долговременный факт
 
-switch <имя>
-    переключиться на ветку
+Пример:
+remember long preferred_language=Kotlin
 
-branches
-    показать все ветки
+
+memory
+    показать все слои памяти
+
+short
+    показать short-term memory
+
+work
+    показать working memory
+
+long
+    показать long-term memory
+
+clear short
+    очистить краткосрочную память
+
+clear work
+    очистить рабочую память
+
+clear long
+    очистить долговременную память
 
 stats
     показать статистику
-
-clear
-    очистить память
 
 help
     показать команды
 
 exit
-    завершить программу
+    выход
 """)
 
 
@@ -554,89 +579,126 @@ def main():
     agent = GeminiAgent()
 
     print("=" * 60)
-    print("ДЕНЬ 10 — СТРАТЕГИИ УПРАВЛЕНИЯ КОНТЕКСТОМ")
+    print("ДЕНЬ 11 — МОДЕЛЬ ПАМЯТИ АГЕНТА")
     print("=" * 60)
 
     print()
-    print(f"Модель:         {agent.model}")
-    print(f"Window size:    {agent.window_size}")
-    print(f"Стратегия:      {agent.strategy}")
+    print(f"Модель: {agent.model}")
+
+    print()
+    print("Memory layers:")
+    print("1. Short-term")
+    print("2. Working")
+    print("3. Long-term")
 
     show_help()
 
     while True:
 
         print()
-        user_input = input("Вы: ").strip()
+        user_input = input(
+            "Вы: "
+        ).strip()
 
         if not user_input:
             continue
 
-        if user_input.lower() == "exit":
+        command = user_input.lower()
+
+        if command == "exit":
             print()
             print("Агент: До свидания!")
             break
 
-        if user_input.lower() == "help":
+        if command == "help":
             show_help()
             continue
 
-        if user_input.lower() == "stats":
+        if command == "memory":
+            agent.show_memory()
+            continue
+
+        if command == "short":
+            agent.show_short()
+            continue
+
+        if command == "work":
+            agent.show_working()
+            continue
+
+        if command == "long":
+            agent.show_long_term()
+            continue
+
+        if command == "stats":
             agent.show_stats()
             continue
 
-        if user_input.lower() == "facts":
-            agent.show_facts()
+        if command == "clear short":
+            agent.clear_short()
             continue
 
-        if user_input.lower() == "branches":
-            agent.show_branches()
+        if command == "clear work":
+            agent.clear_working()
             continue
 
-        if user_input.lower() == "clear":
-            agent.clear()
+        if command == "clear long":
+            agent.clear_long_term()
             continue
 
-        if user_input.lower() == "strategy":
-            print()
-            print(
-                f"Текущая стратегия: "
-                f"{agent.strategy}"
+        if command.startswith(
+            "remember "
+        ):
+            result = parse_memory_command(
+                user_input
             )
-            continue
 
-        if user_input.lower().startswith(
-            "strategy "
-        ):
-            strategy = user_input.split(
-                maxsplit=1
-            )[1].lower()
+            if result is None:
+                print()
+                print(
+                    "Неверный формат команды."
+                )
 
-            agent.set_strategy(strategy)
-            continue
+                print(
+                    "Пример:"
+                )
 
-        if user_input.lower().startswith(
-            "branch "
-        ):
-            branch_name = user_input.split(
-                maxsplit=1
-            )[1]
+                print(
+                    "remember work "
+                    "min_android=12"
+                )
 
-            agent.create_branch(branch_name)
-            continue
+                continue
 
-        if user_input.lower().startswith(
-            "switch "
-        ):
-            branch_name = user_input.split(
-                maxsplit=1
-            )[1]
+            memory_type, key, value = result
 
-            agent.switch_branch(branch_name)
+            if memory_type == "work":
+
+                agent.remember_working(
+                    key,
+                    value
+                )
+
+            elif memory_type == "long":
+
+                agent.remember_long_term(
+                    key,
+                    value
+                )
+
+            else:
+                print()
+                print(
+                    "Тип памяти должен быть "
+                    "'work' или 'long'."
+                )
+
             continue
 
         try:
-            answer = agent.ask(user_input)
+            answer = agent.ask(
+                user_input
+            )
 
             print()
             print("Агент:")
