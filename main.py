@@ -6,93 +6,48 @@ import os
 import time
 
 
-class GeminiAgent:
-    def __init__(
-        self,
-        model="gemini-3.5-flash-lite",
-        short_term_limit=6
-    ):
-        self.client = genai.Client()
-        self.model = model
-        self.short_term_limit = short_term_limit
+class TaskStateMachine:
+    """
+    Конечный автомат задачи.
 
-        # Memory files
-        self.short_term_file = "short_term_memory.json"
-        self.working_file = "working_memory.json"
-        self.long_term_file = "long_term_memory.json"
+    planning -> execution -> validation -> done
+    """
 
-        # Profiles file
-        self.profiles_file = "profiles.json"
+    STATES = [
+        "planning",
+        "execution",
+        "validation",
+        "done"
+    ]
 
-        self.short_term_memory = self.load_json(
-            self.short_term_file,
-            []
-        )
+    TRANSITIONS = {
+        "planning": "execution",
+        "execution": "validation",
+        "validation": "done",
+        "done": None
+    }
 
-        self.working_memory = self.load_json(
-            self.working_file,
-            {}
-        )
+    def __init__(self, filename="task_state.json"):
+        self.filename = filename
 
-        self.long_term_memory = self.load_json(
-            self.long_term_file,
-            {}
-        )
+        self.state = self.load()
 
-        # Несколько профилей для демонстрации персонализации
-        default_profiles = {
-            "beginner": {
-                "name": "Начинающий разработчик",
-                "style": "дружелюбный и обучающий",
-                "format": "пошаговые объяснения с простыми примерами",
-                "detail_level": "подробно",
-                "constraints": [
-                    "не использовать сложные термины без объяснения",
-                    "код объяснять простыми словами"
-                ]
-            },
-
-            "expert": {
-                "name": "Опытный разработчик",
-                "style": "технический и прямой",
-                "format": "краткие технические ответы",
-                "detail_level": "кратко",
-                "constraints": [
-                    "не объяснять базовые понятия",
-                    "минимум вводного текста"
-                ]
-            }
+    def default_state(self):
+        return {
+            "task": "",
+            "stage": "planning",
+            "current_step": "",
+            "expected_action": "",
+            "paused": False
         }
 
-        self.profiles = self.load_json(
-            self.profiles_file,
-            default_profiles
-        )
-
-        self.current_profile = "beginner"
-
-        self.save_json(
-            self.profiles_file,
-            self.profiles
-        )
-
-        # Statistics
-        self.last_prompt_tokens = 0
-        self.last_response_tokens = 0
-        self.last_total_tokens = 0
-        self.last_time = 0
-
-    # ---------------------------------------------------------
-    # JSON
-    # ---------------------------------------------------------
-
-    def load_json(self, filename, default_value):
-        if not os.path.exists(filename):
-            return default_value
+    def load(self):
+        if not os.path.exists(self.filename):
+            return self.default_state()
 
         try:
             with open(
-                filename,
+                self.filename,
                 "r",
                 encoding="utf-8"
             ) as file:
@@ -102,228 +57,254 @@ class GeminiAgent:
             json.JSONDecodeError,
             OSError
         ):
-            return default_value
+            return self.default_state()
 
-    def save_json(self, filename, data):
+    def save(self):
         with open(
-            filename,
+            self.filename,
             "w",
             encoding="utf-8"
         ) as file:
             json.dump(
-                data,
+                self.state,
                 file,
                 ensure_ascii=False,
                 indent=2
             )
 
-    # ---------------------------------------------------------
-    # SHORT-TERM MEMORY
-    # ---------------------------------------------------------
+    def start_task(self, task):
+        self.state = {
+            "task": task,
+            "stage": "planning",
+            "current_step": "Определить план выполнения задачи",
+            "expected_action": "Сформировать план",
+            "paused": False
+        }
 
-    def add_short_term(self, role, text):
-        self.short_term_memory.append({
-            "role": role,
-            "text": text
-        })
-
-        self.short_term_memory = (
-            self.short_term_memory[
-                -self.short_term_limit:
-            ]
-        )
-
-        self.save_json(
-            self.short_term_file,
-            self.short_term_memory
-        )
-
-    # ---------------------------------------------------------
-    # WORKING MEMORY
-    # ---------------------------------------------------------
-
-    def remember_working(self, key, value):
-        self.working_memory[key] = value
-
-        self.save_json(
-            self.working_file,
-            self.working_memory
-        )
+        self.save()
 
         print()
-        print("Сохранено в WORKING MEMORY:")
-        print(f"{key} = {value}")
+        print("Новая задача создана.")
+        self.show()
 
-    # ---------------------------------------------------------
-    # LONG-TERM MEMORY
-    # ---------------------------------------------------------
+    def set_step(
+        self,
+        current_step,
+        expected_action
+    ):
+        self.state["current_step"] = current_step
+        self.state["expected_action"] = expected_action
 
-    def remember_long_term(self, key, value):
-        self.long_term_memory[key] = value
-
-        self.save_json(
-            self.long_term_file,
-            self.long_term_memory
-        )
+        self.save()
 
         print()
-        print("Сохранено в LONG-TERM MEMORY:")
-        print(f"{key} = {value}")
+        print("Текущий шаг обновлён.")
 
-    # ---------------------------------------------------------
-    # USER PROFILE
-    # ---------------------------------------------------------
+    def next_stage(self):
+        current = self.state["stage"]
 
-    def show_profile(self):
-        profile = self.profiles[
-            self.current_profile
-        ]
-
-        print()
-        print("=" * 60)
-        print("ТЕКУЩИЙ ПРОФИЛЬ")
-        print("=" * 60)
-
-        print(
-            f"ID: {self.current_profile}"
+        next_state = self.TRANSITIONS.get(
+            current
         )
 
-        print(
-            json.dumps(
-                profile,
-                ensure_ascii=False,
-                indent=2
-            )
-        )
-
-    def show_profiles(self):
-        print()
-        print("=" * 60)
-        print("ПРОФИЛИ")
-        print("=" * 60)
-
-        for profile_id, profile in self.profiles.items():
-
-            marker = ""
-
-            if profile_id == self.current_profile:
-                marker = " <-- текущий"
-
-            print(
-                f"{profile_id}: "
-                f"{profile['name']}"
-                f"{marker}"
-            )
-
-    def switch_profile(self, profile_id):
-        if profile_id not in self.profiles:
+        if next_state is None:
             print()
             print(
-                f"Профиль '{profile_id}' "
-                f"не найден."
+                "Задача уже находится "
+                "в состоянии done."
             )
             return
 
-        self.current_profile = profile_id
+        self.state["stage"] = next_state
+
+        if next_state == "execution":
+            self.state["current_step"] = (
+                "Выполнить запланированные действия"
+            )
+            self.state["expected_action"] = (
+                "Выполнение задачи"
+            )
+
+        elif next_state == "validation":
+            self.state["current_step"] = (
+                "Проверить полученный результат"
+            )
+            self.state["expected_action"] = (
+                "Провести проверку"
+            )
+
+        elif next_state == "done":
+            self.state["current_step"] = (
+                "Задача завершена"
+            )
+            self.state["expected_action"] = (
+                "Никаких действий не требуется"
+            )
+
+        self.save()
 
         print()
         print(
-            f"Выбран профиль: "
-            f"{profile_id}"
+            f"Переход: {current} -> {next_state}"
         )
 
-    def profile_to_text(self):
-        profile = self.profiles[
-            self.current_profile
-        ]
+    def pause(self):
+        if self.state["paused"]:
+            print()
+            print("Задача уже на паузе.")
+            return
 
+        self.state["paused"] = True
+        self.save()
+
+        print()
+        print("Задача поставлена на паузу.")
+
+    def resume(self):
+        if not self.state["paused"]:
+            print()
+            print("Задача не находится на паузе.")
+            return
+
+        self.state["paused"] = False
+        self.save()
+
+        print()
+        print("Задача продолжена.")
+
+        print(
+            f"Этап: {self.state['stage']}"
+        )
+
+        print(
+            f"Текущий шаг: "
+            f"{self.state['current_step']}"
+        )
+
+        print(
+            f"Ожидаемое действие: "
+            f"{self.state['expected_action']}"
+        )
+
+    def reset(self):
+        self.state = self.default_state()
+        self.save()
+
+        print()
+        print("Состояние задачи сброшено.")
+
+    def show(self):
+        print()
+        print("=" * 60)
+        print("TASK STATE")
+        print("=" * 60)
+
+        print(
+            f"Задача:             "
+            f"{self.state['task'] or 'не задана'}"
+        )
+
+        print(
+            f"Этап:               "
+            f"{self.state['stage']}"
+        )
+
+        print(
+            f"Текущий шаг:        "
+            f"{self.state['current_step'] or 'не задан'}"
+        )
+
+        print(
+            f"Ожидаемое действие: "
+            f"{self.state['expected_action'] or 'не задано'}"
+        )
+
+        status = (
+            "PAUSED"
+            if self.state["paused"]
+            else "ACTIVE"
+        )
+
+        print(
+            f"Статус:             {status}"
+        )
+
+    def to_prompt(self):
         return json.dumps(
-            profile,
+            self.state,
             ensure_ascii=False,
             indent=2
         )
 
-    # ---------------------------------------------------------
-    # PROMPT
-    # ---------------------------------------------------------
 
-    def short_term_to_text(self):
-        parts = []
+class GeminiAgent:
+    def __init__(
+        self,
+        model="gemini-3.5-flash-lite"
+    ):
+        self.client = genai.Client()
+        self.model = model
 
-        for message in self.short_term_memory:
+        self.task_machine = TaskStateMachine()
 
-            if message["role"] == "user":
-                role = "Пользователь"
-            else:
-                role = "Ассистент"
-
-            parts.append(
-                f"{role}: {message['text']}"
-            )
-
-        return "\n\n".join(parts)
+        self.last_prompt_tokens = 0
+        self.last_response_tokens = 0
+        self.last_total_tokens = 0
+        self.last_time = 0
 
     def build_prompt(self, user_message):
-        profile = self.profile_to_text()
-
-        short_term = self.short_term_to_text()
-
-        working = json.dumps(
-            self.working_memory,
-            ensure_ascii=False,
-            indent=2
-        )
-
-        long_term = json.dumps(
-            self.long_term_memory,
-            ensure_ascii=False,
-            indent=2
+        task_state = (
+            self.task_machine.to_prompt()
         )
 
         return f"""
-Ты персонализированный AI-ассистент.
+Ты AI-ассистент, выполняющий задачу пользователя.
 
-ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ:
+У тебя есть формализованное состояние текущей задачи.
 
-{profile}
+TASK STATE:
 
-Адаптируй каждый ответ под этот профиль.
+{task_state}
 
-Учитывай:
-- стиль общения;
-- требуемый формат ответа;
-- уровень детализации;
-- ограничения пользователя.
+Поля состояния:
 
-Не сообщай пользователю о профиле без необходимости.
-Просто автоматически следуй его настройкам.
+task
+- текущая задача
 
+stage
+- текущий этап задачи
 
-ДОЛГОВРЕМЕННАЯ ПАМЯТЬ:
+current_step
+- шаг, который выполняется сейчас
 
-{long_term}
+expected_action
+- действие, которое ожидается следующим
 
-
-РАБОЧАЯ ПАМЯТЬ:
-
-{working}
+paused
+- находится ли задача на паузе
 
 
-КРАТКОСРОЧНАЯ ПАМЯТЬ:
+Возможные этапы:
 
-{short_term}
+planning
+-> execution
+-> validation
+-> done
 
 
-Используй информацию из памяти при ответе.
-Не придумывай отсутствующие факты.
+Используй TASK STATE как источник информации
+о текущем состоянии задачи.
+
+Не проси пользователя повторно объяснять информацию,
+которая уже содержится в TASK STATE.
+
+Если задача находится на паузе, не выполняй следующий
+этап автоматически. Сообщи, что задача приостановлена.
 
 Пользователь: {user_message}
+
 Ассистент:
 """.strip()
-
-    # ---------------------------------------------------------
-    # GEMINI
-    # ---------------------------------------------------------
 
     def ask(self, user_message):
         prompt = self.build_prompt(
@@ -336,23 +317,23 @@ class GeminiAgent:
         print("-" * 60)
 
         print(
-            f"Профиль:    "
-            f"{self.current_profile}"
+            f"Stage:           "
+            f"{self.task_machine.state['stage']}"
         )
 
         print(
-            f"Short-term: "
-            f"{len(self.short_term_memory)} сообщений"
+            f"Current step:    "
+            f"{self.task_machine.state['current_step']}"
         )
 
         print(
-            f"Working:    "
-            f"{len(self.working_memory)} фактов"
+            f"Expected action: "
+            f"{self.task_machine.state['expected_action']}"
         )
 
         print(
-            f"Long-term:  "
-            f"{len(self.long_term_memory)} фактов"
+            f"Paused:          "
+            f"{self.task_machine.state['paused']}"
         )
 
         start = time.perf_counter()
@@ -385,18 +366,6 @@ class GeminiAgent:
             usage.total_token_count or 0
         )
 
-        answer = response.text
-
-        self.add_short_term(
-            "user",
-            user_message
-        )
-
-        self.add_short_term(
-            "assistant",
-            answer
-        )
-
         print()
         print("-" * 60)
         print("СТАТИСТИКА")
@@ -422,210 +391,53 @@ class GeminiAgent:
             f"{self.last_time:.2f} сек."
         )
 
-        return answer
-
-    # ---------------------------------------------------------
-    # MEMORY VIEW
-    # ---------------------------------------------------------
-
-    def show_memory(self):
-        print()
-        print("=" * 60)
-        print("МОДЕЛЬ ПАМЯТИ")
-        print("=" * 60)
-
-        print()
-        print("SHORT-TERM MEMORY")
-        print("-" * 60)
-
-        if not self.short_term_memory:
-            print("Пусто")
-        else:
-            for message in self.short_term_memory:
-                print(
-                    f"{message['role']}: "
-                    f"{message['text']}"
-                )
-
-        print()
-        print("WORKING MEMORY")
-        print("-" * 60)
-
-        print(
-            json.dumps(
-                self.working_memory,
-                ensure_ascii=False,
-                indent=2
-            )
-        )
-
-        print()
-        print("LONG-TERM MEMORY")
-        print("-" * 60)
-
-        print(
-            json.dumps(
-                self.long_term_memory,
-                ensure_ascii=False,
-                indent=2
-            )
-        )
-
-    # ---------------------------------------------------------
-    # CLEAR
-    # ---------------------------------------------------------
-
-    def clear_short(self):
-        self.short_term_memory = []
-
-        self.save_json(
-            self.short_term_file,
-            self.short_term_memory
-        )
-
-        print()
-        print("Short-term memory очищена.")
-
-    def clear_working(self):
-        self.working_memory = {}
-
-        self.save_json(
-            self.working_file,
-            self.working_memory
-        )
-
-        print()
-        print("Working memory очищена.")
-
-    def clear_long_term(self):
-        self.long_term_memory = {}
-
-        self.save_json(
-            self.long_term_file,
-            self.long_term_memory
-        )
-
-        print()
-        print("Long-term memory очищена.")
-
-    def show_stats(self):
-        print()
-        print("=" * 60)
-        print("СТАТИСТИКА")
-        print("=" * 60)
-
-        print(
-            f"Профиль:              "
-            f"{self.current_profile}"
-        )
-
-        print(
-            f"Short-term сообщений: "
-            f"{len(self.short_term_memory)}"
-        )
-
-        print(
-            f"Working фактов:        "
-            f"{len(self.working_memory)}"
-        )
-
-        print(
-            f"Long-term фактов:      "
-            f"{len(self.long_term_memory)}"
-        )
-
-        print()
-        print("Последний запрос:")
-
-        print(
-            f"Входных токенов:       "
-            f"{self.last_prompt_tokens}"
-        )
-
-        print(
-            f"Токенов ответа:        "
-            f"{self.last_response_tokens}"
-        )
-
-        print(
-            f"Всего токенов API:     "
-            f"{self.last_total_tokens}"
-        )
-
-
-def parse_memory_command(text):
-    parts = text.split(
-        maxsplit=2
-    )
-
-    if len(parts) < 3:
-        return None
-
-    memory_type = parts[1]
-    data = parts[2]
-
-    if "=" not in data:
-        return None
-
-    key, value = data.split(
-        "=",
-        maxsplit=1
-    )
-
-    return (
-        memory_type.strip().lower(),
-        key.strip(),
-        value.strip()
-    )
+        return response.text
 
 
 def show_help():
     print()
     print("=" * 60)
-    print("ДЕНЬ 12 — ПЕРСОНАЛИЗАЦИЯ")
+    print("ДЕНЬ 13 — TASK STATE MACHINE")
     print("=" * 60)
 
     print("""
-profile
-    показать текущий профиль
+start <задача>
+    создать новую задачу
 
-profiles
-    показать все профили
+state
+    показать состояние задачи
 
-profile beginner
-    включить профиль начинающего
+step <текущий шаг> | <ожидаемое действие>
+    изменить текущий шаг
 
-profile expert
-    включить профиль эксперта
+next
+    перейти на следующий этап
 
+pause
+    поставить задачу на паузу
 
-remember work <ключ>=<значение>
-    сохранить данные текущей задачи
+resume
+    продолжить задачу
 
-remember long <ключ>=<значение>
-    сохранить долговременные данные
-
-
-memory
-    показать память
-
-clear short
-    очистить текущий диалог
-
-clear work
-    очистить рабочую память
-
-clear long
-    очистить долговременную память
-
-stats
-    показать статистику
+reset
+    сбросить состояние задачи
 
 help
     показать команды
 
 exit
     завершить программу
+
+
+Этапы задачи:
+
+planning
+    ↓
+execution
+    ↓
+validation
+    ↓
+done
 """)
 
 
@@ -633,17 +445,18 @@ def main():
     agent = GeminiAgent()
 
     print("=" * 60)
-    print("ДЕНЬ 12 — ПЕРСОНАЛИЗИРОВАННЫЙ АГЕНТ")
+    print("ДЕНЬ 13 — TASK STATE MACHINE")
     print("=" * 60)
 
     print()
     print(
-        f"Модель:  {agent.model}"
+        f"Модель: {agent.model}"
     )
 
-    print(
-        f"Профиль: {agent.current_profile}"
-    )
+    print()
+    print("Состояние загружено из task_state.json")
+
+    agent.task_machine.show()
 
     show_help()
 
@@ -668,85 +481,64 @@ def main():
             show_help()
             continue
 
-        if command == "profile":
-            agent.show_profile()
+        if command == "state":
+            agent.task_machine.show()
             continue
 
-        if command == "profiles":
-            agent.show_profiles()
+        if command == "next":
+            agent.task_machine.next_stage()
             continue
 
-        if command.startswith("profile "):
-            profile_id = user_input.split(
+        if command == "pause":
+            agent.task_machine.pause()
+            continue
+
+        if command == "resume":
+            agent.task_machine.resume()
+            continue
+
+        if command == "reset":
+            agent.task_machine.reset()
+            continue
+
+        if command.startswith("start "):
+            task = user_input.split(
                 maxsplit=1
-            )[1].strip().lower()
+            )[1].strip()
 
-            agent.switch_profile(
-                profile_id
+            agent.task_machine.start_task(
+                task
             )
 
             continue
 
-        if command == "memory":
-            agent.show_memory()
-            continue
+        if command.startswith("step "):
+            data = user_input.split(
+                maxsplit=1
+            )[1]
 
-        if command == "stats":
-            agent.show_stats()
-            continue
-
-        if command == "clear short":
-            agent.clear_short()
-            continue
-
-        if command == "clear work":
-            agent.clear_working()
-            continue
-
-        if command == "clear long":
-            agent.clear_long_term()
-            continue
-
-        if command.startswith("remember "):
-            result = parse_memory_command(
-                user_input
-            )
-
-            if result is None:
+            if "|" not in data:
                 print()
                 print(
-                    "Неверный формат."
+                    "Используй формат:"
                 )
                 print(
-                    "Пример:"
-                )
-                print(
-                    "remember work "
-                    "min_android=12"
+                    "step <шаг> | "
+                    "<ожидаемое действие>"
                 )
                 continue
 
-            memory_type, key, value = result
-
-            if memory_type == "work":
-
-                agent.remember_working(
-                    key,
-                    value
+            current_step, expected_action = (
+                data.split(
+                    "|",
+                    maxsplit=1
                 )
+            )
 
-            elif memory_type == "long":
-
-                agent.remember_long_term(
-                    key,
-                    value
-                )
-
-            else:
-                print()
-                print(
-                    "Используй work или long."
-                )
+            agent.task_machine.set_step(
+                current_step.strip(),
+                expected_action.strip()
+            )
 
             continue
 
