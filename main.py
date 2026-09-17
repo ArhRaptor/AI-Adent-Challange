@@ -6,19 +6,11 @@ import os
 import time
 
 
+# ============================================================
+# TASK STATE MACHINE
+# ============================================================
+
 class TaskStateMachine:
-    """
-    Конечный автомат задачи.
-
-    planning -> execution -> validation -> done
-    """
-
-    STATES = [
-        "planning",
-        "execution",
-        "validation",
-        "done"
-    ]
 
     TRANSITIONS = {
         "planning": "execution",
@@ -29,7 +21,6 @@ class TaskStateMachine:
 
     def __init__(self, filename="task_state.json"):
         self.filename = filename
-
         self.state = self.load()
 
     def default_state(self):
@@ -85,7 +76,6 @@ class TaskStateMachine:
 
         print()
         print("Новая задача создана.")
-        self.show()
 
     def set_step(
         self,
@@ -109,34 +99,37 @@ class TaskStateMachine:
 
         if next_state is None:
             print()
-            print(
-                "Задача уже находится "
-                "в состоянии done."
-            )
+            print("Задача уже завершена.")
             return
 
         self.state["stage"] = next_state
 
         if next_state == "execution":
+
             self.state["current_step"] = (
                 "Выполнить запланированные действия"
             )
+
             self.state["expected_action"] = (
                 "Выполнение задачи"
             )
 
         elif next_state == "validation":
+
             self.state["current_step"] = (
-                "Проверить полученный результат"
+                "Проверить результат"
             )
+
             self.state["expected_action"] = (
                 "Провести проверку"
             )
 
         elif next_state == "done":
+
             self.state["current_step"] = (
                 "Задача завершена"
             )
+
             self.state["expected_action"] = (
                 "Никаких действий не требуется"
             )
@@ -149,11 +142,6 @@ class TaskStateMachine:
         )
 
     def pause(self):
-        if self.state["paused"]:
-            print()
-            print("Задача уже на паузе.")
-            return
-
         self.state["paused"] = True
         self.save()
 
@@ -161,37 +149,18 @@ class TaskStateMachine:
         print("Задача поставлена на паузу.")
 
     def resume(self):
-        if not self.state["paused"]:
-            print()
-            print("Задача не находится на паузе.")
-            return
-
         self.state["paused"] = False
         self.save()
 
         print()
         print("Задача продолжена.")
 
-        print(
-            f"Этап: {self.state['stage']}"
-        )
-
-        print(
-            f"Текущий шаг: "
-            f"{self.state['current_step']}"
-        )
-
-        print(
-            f"Ожидаемое действие: "
-            f"{self.state['expected_action']}"
-        )
-
     def reset(self):
         self.state = self.default_state()
         self.save()
 
         print()
-        print("Состояние задачи сброшено.")
+        print("Task State сброшен.")
 
     def show(self):
         print()
@@ -237,7 +206,197 @@ class TaskStateMachine:
         )
 
 
+# ============================================================
+# INVARIANTS
+# ============================================================
+
+class InvariantManager:
+
+    def __init__(
+        self,
+        filename="invariants.json"
+    ):
+        self.filename = filename
+        self.invariants = self.load()
+
+    def load(self):
+        if not os.path.exists(self.filename):
+            return {}
+
+        try:
+            with open(
+                self.filename,
+                "r",
+                encoding="utf-8"
+            ) as file:
+                return json.load(file)
+
+        except (
+            json.JSONDecodeError,
+            OSError
+        ):
+            return {}
+
+    def save(self):
+        with open(
+            self.filename,
+            "w",
+            encoding="utf-8"
+        ) as file:
+            json.dump(
+                self.invariants,
+                file,
+                ensure_ascii=False,
+                indent=2
+            )
+
+    def add(self, key, value):
+        self.invariants[key] = value
+
+        self.save()
+
+        print()
+        print("Добавлен инвариант:")
+        print(f"{key} = {value}")
+
+    def remove(self, key):
+        if key not in self.invariants:
+            print()
+            print(
+                f"Инвариант '{key}' не найден."
+            )
+            return
+
+        del self.invariants[key]
+        self.save()
+
+        print()
+        print(
+            f"Инвариант '{key}' удалён."
+        )
+
+    def clear(self):
+        self.invariants = {}
+        self.save()
+
+        print()
+        print("Все инварианты удалены.")
+
+    def show(self):
+        print()
+        print("=" * 60)
+        print("INVARIANTS")
+        print("=" * 60)
+
+        if not self.invariants:
+            print("Инвариантов нет.")
+            return
+
+        for key, value in self.invariants.items():
+            print(
+                f"{key} = {value}"
+            )
+
+    def to_prompt(self):
+        return json.dumps(
+            self.invariants,
+            ensure_ascii=False,
+            indent=2
+        )
+
+    # --------------------------------------------------------
+    # ЛОКАЛЬНАЯ ПРОВЕРКА КОНФЛИКТОВ
+    # --------------------------------------------------------
+
+    def check_conflicts(self, user_message):
+        """
+        Простая детерминированная проверка
+        известных технических конфликтов.
+
+        Возвращает список найденных конфликтов.
+        """
+
+        text = user_message.lower()
+
+        conflicts = []
+
+        architecture = str(
+            self.invariants.get(
+                "architecture",
+                ""
+            )
+        ).lower()
+
+        language = str(
+            self.invariants.get(
+                "language",
+                ""
+            )
+        ).lower()
+
+        ui = str(
+            self.invariants.get(
+                "ui",
+                ""
+            )
+        ).lower()
+
+        # Architecture
+        if architecture == "mvvm":
+
+            forbidden = [
+                "mvp",
+                "mvc"
+            ]
+
+            for value in forbidden:
+
+                if value in text:
+                    conflicts.append(
+                        f"architecture=MVVM "
+                        f"конфликтует с {value.upper()}"
+                    )
+
+        # Language
+        if language == "kotlin":
+
+            if (
+                "перепиши на java" in text
+                or "используй java" in text
+                or "пишем на java" in text
+                or "сделай на java" in text
+            ):
+                conflicts.append(
+                    "language=Kotlin "
+                    "конфликтует с Java"
+                )
+
+        # UI
+        if (
+            "jetpack compose" in ui
+            or ui == "compose"
+        ):
+
+            if (
+                "перепиши на xml" in text
+                or "используй xml" in text
+                or "сделай на xml" in text
+                or "xml layout" in text
+            ):
+                conflicts.append(
+                    "ui=Jetpack Compose "
+                    "конфликтует с XML UI"
+                )
+
+        return conflicts
+
+
+# ============================================================
+# GEMINI AGENT
+# ============================================================
+
 class GeminiAgent:
+
     def __init__(
         self,
         model="gemini-3.5-flash-lite"
@@ -245,68 +404,131 @@ class GeminiAgent:
         self.client = genai.Client()
         self.model = model
 
-        self.task_machine = TaskStateMachine()
+        self.task_machine = (
+            TaskStateMachine()
+        )
+
+        self.invariant_manager = (
+            InvariantManager()
+        )
 
         self.last_prompt_tokens = 0
         self.last_response_tokens = 0
         self.last_total_tokens = 0
         self.last_time = 0
 
-    def build_prompt(self, user_message):
+    def build_prompt(
+        self,
+        user_message
+    ):
         task_state = (
             self.task_machine.to_prompt()
+        )
+
+        invariants = (
+            self.invariant_manager.to_prompt()
         )
 
         return f"""
 Ты AI-ассистент, выполняющий задачу пользователя.
 
-У тебя есть формализованное состояние текущей задачи.
+У тебя есть формализованное состояние задачи
+и отдельный набор обязательных инвариантов.
+
 
 TASK STATE:
 
 {task_state}
 
-Поля состояния:
 
-task
-- текущая задача
+INVARIANTS:
 
-stage
-- текущий этап задачи
-
-current_step
-- шаг, который выполняется сейчас
-
-expected_action
-- действие, которое ожидается следующим
-
-paused
-- находится ли задача на паузе
+{invariants}
 
 
-Возможные этапы:
+ИНВАРИАНТЫ — обязательные правила.
 
-planning
--> execution
--> validation
--> done
+Ты обязан явно учитывать их при выборе решения.
+
+Нельзя предлагать решение, которое нарушает
+хотя бы один инвариант.
+
+Перед формированием ответа:
+
+1. Определи, относится ли запрос к текущей задаче.
+2. Проверь запрос на конфликт с INVARIANTS.
+3. Если конфликта нет — ответь нормально.
+4. Если есть конфликт — не предлагай запрещённое решение.
+5. Объясни, какой именно инвариант нарушается.
+6. Если возможно, предложи альтернативу,
+   которая сохраняет все инварианты.
+
+Не изменяй инварианты самостоятельно.
+
+Запрос пользователя не имеет права автоматически
+отменять существующий инвариант.
+
+Изменение инварианта выполняется только отдельной
+командой управления состоянием.
 
 
-Используй TASK STATE как источник информации
-о текущем состоянии задачи.
+Пользователь:
 
-Не проси пользователя повторно объяснять информацию,
-которая уже содержится в TASK STATE.
+{user_message}
 
-Если задача находится на паузе, не выполняй следующий
-этап автоматически. Сообщи, что задача приостановлена.
-
-Пользователь: {user_message}
 
 Ассистент:
 """.strip()
 
-    def ask(self, user_message):
+    def ask(
+        self,
+        user_message
+    ):
+        # ----------------------------------------------------
+        # УРОВЕНЬ 1:
+        # детерминированная проверка Python
+        # ----------------------------------------------------
+
+        conflicts = (
+            self.invariant_manager
+            .check_conflicts(
+                user_message
+            )
+        )
+
+        if conflicts:
+
+            print()
+            print("=" * 60)
+            print("КОНФЛИКТ С ИНВАРИАНТАМИ")
+            print("=" * 60)
+
+            for conflict in conflicts:
+                print(
+                    f"- {conflict}"
+                )
+
+            return (
+                "Я не могу предложить это решение, "
+                "потому что запрос нарушает "
+                "зафиксированные инварианты:\n\n"
+                +
+                "\n".join(
+                    f"- {item}"
+                    for item in conflicts
+                )
+                +
+                "\n\nСначала необходимо явно "
+                "изменить соответствующий инвариант "
+                "либо выбрать решение, которое "
+                "ему соответствует."
+            )
+
+        # ----------------------------------------------------
+        # УРОВЕНЬ 2:
+        # Gemini тоже получает все инварианты
+        # ----------------------------------------------------
+
         prompt = self.build_prompt(
             user_message
         )
@@ -317,39 +539,32 @@ planning
         print("-" * 60)
 
         print(
-            f"Stage:           "
+            f"Stage:      "
             f"{self.task_machine.state['stage']}"
         )
 
         print(
-            f"Current step:    "
-            f"{self.task_machine.state['current_step']}"
-        )
-
-        print(
-            f"Expected action: "
-            f"{self.task_machine.state['expected_action']}"
-        )
-
-        print(
-            f"Paused:          "
-            f"{self.task_machine.state['paused']}"
+            f"Invariants: "
+            f"{len(self.invariant_manager.invariants)}"
         )
 
         start = time.perf_counter()
 
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(
-                    thinking_level="minimal"
+        response = (
+            self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level="minimal"
+                    )
                 )
             )
         )
 
         self.last_time = (
-            time.perf_counter() - start
+            time.perf_counter()
+            - start
         )
 
         usage = response.usage_metadata
@@ -394,24 +609,48 @@ planning
         return response.text
 
 
+# ============================================================
+# COMMAND PARSING
+# ============================================================
+
+def parse_key_value(text):
+    if "=" not in text:
+        return None
+
+    key, value = text.split(
+        "=",
+        maxsplit=1
+    )
+
+    key = key.strip()
+    value = value.strip()
+
+    if not key or not value:
+        return None
+
+    return key, value
+
+
 def show_help():
     print()
     print("=" * 60)
-    print("ДЕНЬ 13 — TASK STATE MACHINE")
+    print("ДЕНЬ 14 — INVARIANTS")
     print("=" * 60)
 
     print("""
+TASK STATE
+
 start <задача>
-    создать новую задачу
+    создать задачу
 
 state
-    показать состояние задачи
+    показать состояние
 
-step <текущий шаг> | <ожидаемое действие>
-    изменить текущий шаг
+step <шаг> | <ожидаемое действие>
+    установить текущий шаг
 
 next
-    перейти на следующий этап
+    следующий этап
 
 pause
     поставить задачу на паузу
@@ -419,33 +658,51 @@ pause
 resume
     продолжить задачу
 
+
+INVARIANTS
+
+invariant <ключ>=<значение>
+    добавить или изменить инвариант
+
+Пример:
+invariant architecture=MVVM
+
+invariants
+    показать все инварианты
+
+remove invariant <ключ>
+    удалить конкретный инвариант
+
+clear invariants
+    удалить все инварианты
+
+
+OTHER
+
 reset
-    сбросить состояние задачи
+    сбросить Task State
 
 help
     показать команды
 
 exit
-    завершить программу
-
-
-Этапы задачи:
-
-planning
-    ↓
-execution
-    ↓
-validation
-    ↓
-done
+    выход
 """)
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 def main():
+
     agent = GeminiAgent()
 
     print("=" * 60)
-    print("ДЕНЬ 13 — TASK STATE MACHINE")
+    print(
+        "ДЕНЬ 14 — "
+        "ИНВАРИАНТЫ И ОГРАНИЧЕНИЯ"
+    )
     print("=" * 60)
 
     print()
@@ -454,15 +711,20 @@ def main():
     )
 
     print()
-    print("Состояние загружено из task_state.json")
+    print(
+        "Task State: task_state.json"
+    )
 
-    agent.task_machine.show()
+    print(
+        "Invariants: invariants.json"
+    )
 
     show_help()
 
     while True:
 
         print()
+
         user_input = input(
             "Вы: "
         ).strip()
@@ -472,36 +734,117 @@ def main():
 
         command = user_input.lower()
 
+        # EXIT
         if command == "exit":
+
             print()
             print("Агент: До свидания!")
             break
 
+        # HELP
         if command == "help":
+
             show_help()
             continue
 
+        # STATE
         if command == "state":
+
             agent.task_machine.show()
             continue
 
+        # INVARIANTS
+        if command == "invariants":
+
+            agent.invariant_manager.show()
+            continue
+
+        # ADD INVARIANT
+        if command.startswith(
+            "invariant "
+        ):
+
+            data = user_input.split(
+                maxsplit=1
+            )[1]
+
+            result = parse_key_value(
+                data
+            )
+
+            if result is None:
+
+                print()
+                print(
+                    "Используй формат:"
+                )
+
+                print(
+                    "invariant "
+                    "architecture=MVVM"
+                )
+
+                continue
+
+            key, value = result
+
+            agent.invariant_manager.add(
+                key,
+                value
+            )
+
+            continue
+
+        # REMOVE INVARIANT
+        if command.startswith(
+            "remove invariant "
+        ):
+
+            key = user_input.split(
+                maxsplit=2
+            )[2].strip()
+
+            agent.invariant_manager.remove(
+                key
+            )
+
+            continue
+
+        # CLEAR INVARIANTS
+        if command == "clear invariants":
+
+            agent.invariant_manager.clear()
+            continue
+
+        # NEXT
         if command == "next":
+
             agent.task_machine.next_stage()
             continue
 
+        # PAUSE
         if command == "pause":
+
             agent.task_machine.pause()
             continue
 
+        # RESUME
         if command == "resume":
+
             agent.task_machine.resume()
             continue
 
+        # RESET
         if command == "reset":
+
             agent.task_machine.reset()
             continue
 
-        if command.startswith("start "):
+        # START
+        if command.startswith(
+            "start "
+        ):
+
             task = user_input.split(
                 maxsplit=1
             )[1].strip()
@@ -512,20 +855,27 @@ def main():
 
             continue
 
-        if command.startswith("step "):
+        # STEP
+        if command.startswith(
+            "step "
+        ):
+
             data = user_input.split(
                 maxsplit=1
             )[1]
 
             if "|" not in data:
+
                 print()
                 print(
                     "Используй формат:"
                 )
+
                 print(
                     "step <шаг> | "
                     "<ожидаемое действие>"
                 )
+
                 continue
 
             current_step, expected_action = (
@@ -542,7 +892,9 @@ def main():
 
             continue
 
+        # NORMAL REQUEST
         try:
+
             answer = agent.ask(
                 user_input
             )
@@ -552,6 +904,7 @@ def main():
             print(answer)
 
         except Exception as error:
+
             print()
             print("Ошибка:")
             print(error)

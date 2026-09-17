@@ -1,0 +1,6 @@
+{
+  "architecture": "MVVM",
+  "language": "Kotlin",
+  "ui": "Jetpack Compose",
+  "min_android": "12"
+}
