@@ -12,50 +12,101 @@ import time
 
 class TaskStateMachine:
 
-    TRANSITIONS = {
-        "planning": "execution",
-        "execution": "validation",
-        "validation": "done",
-        "done": None
+    STATES = [
+        "planning",
+        "execution",
+        "validation",
+        "done"
+    ]
+
+    # --------------------------------------------------------
+    # РАЗРЕШЁННЫЕ ПЕРЕХОДЫ
+    # --------------------------------------------------------
+
+    ALLOWED_TRANSITIONS = {
+        "planning": ["execution"],
+        "execution": ["validation"],
+        "validation": ["done"],
+        "done": []
     }
 
-    def __init__(self, filename="task_state.json"):
+    def __init__(
+        self,
+        filename="task_state.json"
+    ):
         self.filename = filename
         self.state = self.load()
 
+    # --------------------------------------------------------
+    # DEFAULT STATE
+    # --------------------------------------------------------
+
     def default_state(self):
+
         return {
             "task": "",
             "stage": "planning",
             "current_step": "",
             "expected_action": "",
-            "paused": False
+            "paused": False,
+
+            "plan_approved": False,
+            "implementation_completed": False,
+            "validation_passed": False
         }
 
+    # --------------------------------------------------------
+    # LOAD
+    # --------------------------------------------------------
+
     def load(self):
-        if not os.path.exists(self.filename):
+
+        if not os.path.exists(
+            self.filename
+        ):
             return self.default_state()
 
         try:
+
             with open(
                 self.filename,
                 "r",
                 encoding="utf-8"
             ) as file:
-                return json.load(file)
+
+                loaded = json.load(file)
+
+            # Добавляем новые поля,
+            # если остался JSON от предыдущего дня.
+
+            default = self.default_state()
+
+            for key, value in default.items():
+
+                if key not in loaded:
+                    loaded[key] = value
+
+            return loaded
 
         except (
             json.JSONDecodeError,
             OSError
         ):
+
             return self.default_state()
 
+    # --------------------------------------------------------
+    # SAVE
+    # --------------------------------------------------------
+
     def save(self):
+
         with open(
             self.filename,
             "w",
             encoding="utf-8"
         ) as file:
+
             json.dump(
                 self.state,
                 file,
@@ -63,68 +114,351 @@ class TaskStateMachine:
                 indent=2
             )
 
-    def start_task(self, task):
-        self.state = {
-            "task": task,
-            "stage": "planning",
-            "current_step": "Определить план выполнения задачи",
-            "expected_action": "Сформировать план",
-            "paused": False
-        }
+    # --------------------------------------------------------
+    # START TASK
+    # --------------------------------------------------------
+
+    def start_task(
+        self,
+        task
+    ):
+
+        self.state = self.default_state()
+
+        self.state["task"] = task
+
+        self.state["current_step"] = (
+            "Подготовить план выполнения задачи"
+        )
+
+        self.state["expected_action"] = (
+            "Утвердить план"
+        )
 
         self.save()
 
         print()
         print("Новая задача создана.")
 
+        self.show()
+
+    # --------------------------------------------------------
+    # SHOW
+    # --------------------------------------------------------
+
+    def show(self):
+
+        print()
+        print("=" * 60)
+        print("TASK STATE")
+        print("=" * 60)
+
+        print(
+            f"Задача:                  "
+            f"{self.state['task'] or 'не задана'}"
+        )
+
+        print(
+            f"Этап:                    "
+            f"{self.state['stage']}"
+        )
+
+        print(
+            f"Текущий шаг:             "
+            f"{self.state['current_step'] or 'не задан'}"
+        )
+
+        print(
+            f"Ожидаемое действие:      "
+            f"{self.state['expected_action'] or 'не задано'}"
+        )
+
+        print(
+            f"Пауза:                   "
+            f"{self.state['paused']}"
+        )
+
+        print()
+        print("УСЛОВИЯ ПЕРЕХОДОВ")
+        print("-" * 60)
+
+        print(
+            f"План утверждён:          "
+            f"{self.state['plan_approved']}"
+        )
+
+        print(
+            f"Реализация завершена:    "
+            f"{self.state['implementation_completed']}"
+        )
+
+        print(
+            f"Валидация пройдена:      "
+            f"{self.state['validation_passed']}"
+        )
+
+    # --------------------------------------------------------
+    # SET STEP
+    # --------------------------------------------------------
+
     def set_step(
         self,
         current_step,
         expected_action
     ):
-        self.state["current_step"] = current_step
-        self.state["expected_action"] = expected_action
+
+        self.state["current_step"] = (
+            current_step
+        )
+
+        self.state["expected_action"] = (
+            expected_action
+        )
 
         self.save()
 
         print()
         print("Текущий шаг обновлён.")
 
-    def next_stage(self):
+    # --------------------------------------------------------
+    # VALIDATE TRANSITION
+    # --------------------------------------------------------
+
+    def validate_transition(
+        self,
+        target_state
+    ):
+
         current = self.state["stage"]
 
-        next_state = self.TRANSITIONS.get(
-            current
+        # Проверяем существование состояния
+
+        if target_state not in self.STATES:
+
+            return (
+                False,
+                f"Состояние '{target_state}' "
+                f"не существует."
+            )
+
+        # Нельзя переходить,
+        # пока задача на паузе
+
+        if self.state["paused"]:
+
+            return (
+                False,
+                "Задача находится на паузе. "
+                "Сначала выполните resume."
+            )
+
+        # Проверяем граф переходов
+
+        allowed = (
+            self.ALLOWED_TRANSITIONS.get(
+                current,
+                []
+            )
         )
 
-        if next_state is None:
+        if target_state not in allowed:
+
+            return (
+                False,
+                f"Переход "
+                f"{current} -> {target_state} "
+                f"запрещён."
+            )
+
+        # ----------------------------------------------------
+        # BUSINESS RULES
+        # ----------------------------------------------------
+
+        if (
+            current == "planning"
+            and target_state == "execution"
+            and not self.state["plan_approved"]
+        ):
+
+            return (
+                False,
+                "Нельзя начать execution: "
+                "план ещё не утверждён."
+            )
+
+        if (
+            current == "execution"
+            and target_state == "validation"
+            and not self.state[
+                "implementation_completed"
+            ]
+        ):
+
+            return (
+                False,
+                "Нельзя перейти к validation: "
+                "реализация ещё не завершена."
+            )
+
+        if (
+            current == "validation"
+            and target_state == "done"
+            and not self.state[
+                "validation_passed"
+            ]
+        ):
+
+            return (
+                False,
+                "Нельзя завершить задачу: "
+                "валидация ещё не пройдена."
+            )
+
+        return (
+            True,
+            "Переход разрешён."
+        )
+
+    # --------------------------------------------------------
+    # TRANSITION
+    # --------------------------------------------------------
+
+    def transition_to(
+        self,
+        target_state
+    ):
+
+        target_state = (
+            target_state
+            .strip()
+            .lower()
+        )
+
+        current = self.state["stage"]
+
+        allowed, reason = (
+            self.validate_transition(
+                target_state
+            )
+        )
+
+        if not allowed:
+
             print()
-            print("Задача уже завершена.")
-            return
+            print("=" * 60)
+            print("ПЕРЕХОД ЗАБЛОКИРОВАН")
+            print("=" * 60)
 
-        self.state["stage"] = next_state
+            print()
+            print(
+                f"Текущее состояние: {current}"
+            )
 
-        if next_state == "execution":
+            print(
+                f"Запрошено:         {target_state}"
+            )
+
+            print()
+            print(
+                f"Причина: {reason}"
+            )
+
+            return False
+
+        # Переход разрешён
+
+        self.state["stage"] = (
+            target_state
+        )
+
+        self.update_stage_description()
+
+        self.save()
+
+        print()
+        print("=" * 60)
+        print("ПЕРЕХОД ВЫПОЛНЕН")
+        print("=" * 60)
+
+        print()
+        print(
+            f"{current} -> {target_state}"
+        )
+
+        return True
+
+    # --------------------------------------------------------
+    # NEXT
+    # --------------------------------------------------------
+
+    def next_stage(self):
+
+        current = self.state["stage"]
+
+        allowed = (
+            self.ALLOWED_TRANSITIONS.get(
+                current,
+                []
+            )
+        )
+
+        if not allowed:
+
+            print()
+            print(
+                "Следующего состояния нет."
+            )
+
+            return False
+
+        # В нашей модели у каждого состояния
+        # только один следующий этап.
+
+        target = allowed[0]
+
+        return self.transition_to(
+            target
+        )
+
+    # --------------------------------------------------------
+    # UPDATE DESCRIPTION
+    # --------------------------------------------------------
+
+    def update_stage_description(self):
+
+        stage = self.state["stage"]
+
+        if stage == "planning":
 
             self.state["current_step"] = (
-                "Выполнить запланированные действия"
+                "Подготовить план выполнения задачи"
             )
 
             self.state["expected_action"] = (
-                "Выполнение задачи"
+                "Утвердить план"
             )
 
-        elif next_state == "validation":
+        elif stage == "execution":
+
+            self.state["current_step"] = (
+                "Выполнить реализацию"
+            )
+
+            self.state["expected_action"] = (
+                "Завершить реализацию"
+            )
+
+        elif stage == "validation":
 
             self.state["current_step"] = (
                 "Проверить результат"
             )
 
             self.state["expected_action"] = (
-                "Провести проверку"
+                "Подтвердить успешную валидацию"
             )
 
-        elif next_state == "done":
+        elif stage == "done":
 
             self.state["current_step"] = (
                 "Задача завершена"
@@ -134,261 +468,174 @@ class TaskStateMachine:
                 "Никаких действий не требуется"
             )
 
+    # --------------------------------------------------------
+    # APPROVE PLAN
+    # --------------------------------------------------------
+
+    def approve_plan(self):
+
+        if self.state["stage"] != "planning":
+
+            print()
+            print(
+                "План можно утверждать "
+                "только на этапе planning."
+            )
+
+            return
+
+        self.state["plan_approved"] = True
+
+        self.state["expected_action"] = (
+            "Перейти к execution"
+        )
+
         self.save()
 
         print()
-        print(
-            f"Переход: {current} -> {next_state}"
+        print("План утверждён.")
+
+    # --------------------------------------------------------
+    # COMPLETE IMPLEMENTATION
+    # --------------------------------------------------------
+
+    def complete_implementation(self):
+
+        if self.state["stage"] != "execution":
+
+            print()
+            print(
+                "Завершить реализацию можно "
+                "только на этапе execution."
+            )
+
+            return
+
+        self.state[
+            "implementation_completed"
+        ] = True
+
+        self.state["expected_action"] = (
+            "Перейти к validation"
         )
 
+        self.save()
+
+        print()
+        print("Реализация отмечена завершённой.")
+
+    # --------------------------------------------------------
+    # PASS VALIDATION
+    # --------------------------------------------------------
+
+    def pass_validation(self):
+
+        if self.state["stage"] != "validation":
+
+            print()
+            print(
+                "Валидацию можно подтвердить "
+                "только на этапе validation."
+            )
+
+            return
+
+        self.state[
+            "validation_passed"
+        ] = True
+
+        self.state["expected_action"] = (
+            "Перейти к done"
+        )
+
+        self.save()
+
+        print()
+        print("Валидация успешно пройдена.")
+
+    # --------------------------------------------------------
+    # PAUSE
+    # --------------------------------------------------------
+
     def pause(self):
+
+        if self.state["paused"]:
+
+            print()
+            print(
+                "Задача уже находится на паузе."
+            )
+
+            return
+
         self.state["paused"] = True
+
         self.save()
 
         print()
         print("Задача поставлена на паузу.")
 
+    # --------------------------------------------------------
+    # RESUME
+    # --------------------------------------------------------
+
     def resume(self):
+
+        if not self.state["paused"]:
+
+            print()
+            print(
+                "Задача не находится на паузе."
+            )
+
+            return
+
         self.state["paused"] = False
+
         self.save()
 
         print()
         print("Задача продолжена.")
 
+        print(
+            f"Продолжаем с этапа: "
+            f"{self.state['stage']}"
+        )
+
+        print(
+            f"Текущий шаг: "
+            f"{self.state['current_step']}"
+        )
+
+        print(
+            f"Ожидаемое действие: "
+            f"{self.state['expected_action']}"
+        )
+
+    # --------------------------------------------------------
+    # RESET
+    # --------------------------------------------------------
+
     def reset(self):
+
         self.state = self.default_state()
+
         self.save()
 
         print()
         print("Task State сброшен.")
 
-    def show(self):
-        print()
-        print("=" * 60)
-        print("TASK STATE")
-        print("=" * 60)
-
-        print(
-            f"Задача:             "
-            f"{self.state['task'] or 'не задана'}"
-        )
-
-        print(
-            f"Этап:               "
-            f"{self.state['stage']}"
-        )
-
-        print(
-            f"Текущий шаг:        "
-            f"{self.state['current_step'] or 'не задан'}"
-        )
-
-        print(
-            f"Ожидаемое действие: "
-            f"{self.state['expected_action'] or 'не задано'}"
-        )
-
-        status = (
-            "PAUSED"
-            if self.state["paused"]
-            else "ACTIVE"
-        )
-
-        print(
-            f"Статус:             {status}"
-        )
+    # --------------------------------------------------------
+    # PROMPT
+    # --------------------------------------------------------
 
     def to_prompt(self):
+
         return json.dumps(
             self.state,
             ensure_ascii=False,
             indent=2
         )
-
-
-# ============================================================
-# INVARIANTS
-# ============================================================
-
-class InvariantManager:
-
-    def __init__(
-        self,
-        filename="invariants.json"
-    ):
-        self.filename = filename
-        self.invariants = self.load()
-
-    def load(self):
-        if not os.path.exists(self.filename):
-            return {}
-
-        try:
-            with open(
-                self.filename,
-                "r",
-                encoding="utf-8"
-            ) as file:
-                return json.load(file)
-
-        except (
-            json.JSONDecodeError,
-            OSError
-        ):
-            return {}
-
-    def save(self):
-        with open(
-            self.filename,
-            "w",
-            encoding="utf-8"
-        ) as file:
-            json.dump(
-                self.invariants,
-                file,
-                ensure_ascii=False,
-                indent=2
-            )
-
-    def add(self, key, value):
-        self.invariants[key] = value
-
-        self.save()
-
-        print()
-        print("Добавлен инвариант:")
-        print(f"{key} = {value}")
-
-    def remove(self, key):
-        if key not in self.invariants:
-            print()
-            print(
-                f"Инвариант '{key}' не найден."
-            )
-            return
-
-        del self.invariants[key]
-        self.save()
-
-        print()
-        print(
-            f"Инвариант '{key}' удалён."
-        )
-
-    def clear(self):
-        self.invariants = {}
-        self.save()
-
-        print()
-        print("Все инварианты удалены.")
-
-    def show(self):
-        print()
-        print("=" * 60)
-        print("INVARIANTS")
-        print("=" * 60)
-
-        if not self.invariants:
-            print("Инвариантов нет.")
-            return
-
-        for key, value in self.invariants.items():
-            print(
-                f"{key} = {value}"
-            )
-
-    def to_prompt(self):
-        return json.dumps(
-            self.invariants,
-            ensure_ascii=False,
-            indent=2
-        )
-
-    # --------------------------------------------------------
-    # ЛОКАЛЬНАЯ ПРОВЕРКА КОНФЛИКТОВ
-    # --------------------------------------------------------
-
-    def check_conflicts(self, user_message):
-        """
-        Простая детерминированная проверка
-        известных технических конфликтов.
-
-        Возвращает список найденных конфликтов.
-        """
-
-        text = user_message.lower()
-
-        conflicts = []
-
-        architecture = str(
-            self.invariants.get(
-                "architecture",
-                ""
-            )
-        ).lower()
-
-        language = str(
-            self.invariants.get(
-                "language",
-                ""
-            )
-        ).lower()
-
-        ui = str(
-            self.invariants.get(
-                "ui",
-                ""
-            )
-        ).lower()
-
-        # Architecture
-        if architecture == "mvvm":
-
-            forbidden = [
-                "mvp",
-                "mvc"
-            ]
-
-            for value in forbidden:
-
-                if value in text:
-                    conflicts.append(
-                        f"architecture=MVVM "
-                        f"конфликтует с {value.upper()}"
-                    )
-
-        # Language
-        if language == "kotlin":
-
-            if (
-                "перепиши на java" in text
-                or "используй java" in text
-                or "пишем на java" in text
-                or "сделай на java" in text
-            ):
-                conflicts.append(
-                    "language=Kotlin "
-                    "конфликтует с Java"
-                )
-
-        # UI
-        if (
-            "jetpack compose" in ui
-            or ui == "compose"
-        ):
-
-            if (
-                "перепиши на xml" in text
-                or "используй xml" in text
-                or "сделай на xml" in text
-                or "xml layout" in text
-            ):
-                conflicts.append(
-                    "ui=Jetpack Compose "
-                    "конфликтует с XML UI"
-                )
-
-        return conflicts
 
 
 # ============================================================
@@ -401,15 +648,13 @@ class GeminiAgent:
         self,
         model="gemini-3.5-flash-lite"
     ):
+
         self.client = genai.Client()
+
         self.model = model
 
         self.task_machine = (
             TaskStateMachine()
-        )
-
-        self.invariant_manager = (
-            InvariantManager()
         )
 
         self.last_prompt_tokens = 0
@@ -417,59 +662,69 @@ class GeminiAgent:
         self.last_total_tokens = 0
         self.last_time = 0
 
+    # --------------------------------------------------------
+    # BUILD PROMPT
+    # --------------------------------------------------------
+
     def build_prompt(
         self,
         user_message
     ):
+
         task_state = (
             self.task_machine.to_prompt()
         )
 
-        invariants = (
-            self.invariant_manager.to_prompt()
-        )
-
         return f"""
-Ты AI-ассистент, выполняющий задачу пользователя.
+Ты AI-ассистент с контролируемым жизненным циклом задачи.
 
-У тебя есть формализованное состояние задачи
-и отдельный набор обязательных инвариантов.
-
+Текущее формализованное состояние:
 
 TASK STATE:
 
 {task_state}
 
 
-INVARIANTS:
+Разрешённый жизненный цикл:
 
-{invariants}
+planning
+->
+execution
+->
+validation
+->
+done
 
 
-ИНВАРИАНТЫ — обязательные правила.
+Правила:
 
-Ты обязан явно учитывать их при выборе решения.
+1. Нельзя выполнять реализацию,
+   пока план не утверждён.
 
-Нельзя предлагать решение, которое нарушает
-хотя бы один инвариант.
+2. Нельзя переходить к validation,
+   пока реализация не завершена.
 
-Перед формированием ответа:
+3. Нельзя считать задачу done,
+   пока validation не пройдена.
 
-1. Определи, относится ли запрос к текущей задаче.
-2. Проверь запрос на конфликт с INVARIANTS.
-3. Если конфликта нет — ответь нормально.
-4. Если есть конфликт — не предлагай запрещённое решение.
-5. Объясни, какой именно инвариант нарушается.
-6. Если возможно, предложи альтернативу,
-   которая сохраняет все инварианты.
+4. Нельзя перепрыгивать состояния.
 
-Не изменяй инварианты самостоятельно.
+5. Если задача paused,
+   нельзя продолжать выполнение,
+   пока пользователь явно не выполнит resume.
 
-Запрос пользователя не имеет права автоматически
-отменять существующий инвариант.
+6. Не изменяй состояние задачи самостоятельно.
 
-Изменение инварианта выполняется только отдельной
-командой управления состоянием.
+7. Управление состоянием выполняется
+   только через команды программы.
+
+8. Если запрос пользователя требует действия,
+   которое невозможно на текущем этапе,
+   объясни, почему оно сейчас недоступно
+   и какое действие необходимо выполнить сначала.
+
+Используй TASK STATE как источник истины
+о текущем жизненном цикле задачи.
 
 
 Пользователь:
@@ -480,54 +735,14 @@ INVARIANTS:
 Ассистент:
 """.strip()
 
+    # --------------------------------------------------------
+    # ASK
+    # --------------------------------------------------------
+
     def ask(
         self,
         user_message
     ):
-        # ----------------------------------------------------
-        # УРОВЕНЬ 1:
-        # детерминированная проверка Python
-        # ----------------------------------------------------
-
-        conflicts = (
-            self.invariant_manager
-            .check_conflicts(
-                user_message
-            )
-        )
-
-        if conflicts:
-
-            print()
-            print("=" * 60)
-            print("КОНФЛИКТ С ИНВАРИАНТАМИ")
-            print("=" * 60)
-
-            for conflict in conflicts:
-                print(
-                    f"- {conflict}"
-                )
-
-            return (
-                "Я не могу предложить это решение, "
-                "потому что запрос нарушает "
-                "зафиксированные инварианты:\n\n"
-                +
-                "\n".join(
-                    f"- {item}"
-                    for item in conflicts
-                )
-                +
-                "\n\nСначала необходимо явно "
-                "изменить соответствующий инвариант "
-                "либо выбрать решение, которое "
-                "ему соответствует."
-            )
-
-        # ----------------------------------------------------
-        # УРОВЕНЬ 2:
-        # Gemini тоже получает все инварианты
-        # ----------------------------------------------------
 
         prompt = self.build_prompt(
             user_message
@@ -539,13 +754,13 @@ INVARIANTS:
         print("-" * 60)
 
         print(
-            f"Stage:      "
+            f"Stage:  "
             f"{self.task_machine.state['stage']}"
         )
 
         print(
-            f"Invariants: "
-            f"{len(self.invariant_manager.invariants)}"
+            f"Paused: "
+            f"{self.task_machine.state['paused']}"
         )
 
         start = time.perf_counter()
@@ -610,47 +825,45 @@ INVARIANTS:
 
 
 # ============================================================
-# COMMAND PARSING
+# HELP
 # ============================================================
 
-def parse_key_value(text):
-    if "=" not in text:
-        return None
-
-    key, value = text.split(
-        "=",
-        maxsplit=1
-    )
-
-    key = key.strip()
-    value = value.strip()
-
-    if not key or not value:
-        return None
-
-    return key, value
-
-
 def show_help():
+
     print()
     print("=" * 60)
-    print("ДЕНЬ 14 — INVARIANTS")
+    print("ДЕНЬ 15 — CONTROLLED TRANSITIONS")
     print("=" * 60)
 
     print("""
-TASK STATE
+TASK
 
 start <задача>
-    создать задачу
+    создать новую задачу
 
 state
     показать состояние
 
-step <шаг> | <ожидаемое действие>
-    установить текущий шаг
+
+LIFECYCLE
+
+approve plan
+    утвердить план
+
+complete implementation
+    отметить реализацию завершённой
+
+pass validation
+    подтвердить успешную валидацию
 
 next
-    следующий этап
+    перейти на следующий разрешённый этап
+
+goto <state>
+    попытаться явно перейти в состояние
+
+
+PAUSE
 
 pause
     поставить задачу на паузу
@@ -659,34 +872,30 @@ resume
     продолжить задачу
 
 
-INVARIANTS
-
-invariant <ключ>=<значение>
-    добавить или изменить инвариант
-
-Пример:
-invariant architecture=MVVM
-
-invariants
-    показать все инварианты
-
-remove invariant <ключ>
-    удалить конкретный инвариант
-
-clear invariants
-    удалить все инварианты
-
-
 OTHER
 
+step <шаг> | <ожидаемое действие>
+    изменить описание текущего шага
+
 reset
-    сбросить Task State
+    сбросить состояние
 
 help
     показать команды
 
 exit
-    выход
+    завершить программу
+
+
+Жизненный цикл:
+
+planning
+    ↓
+execution
+    ↓
+validation
+    ↓
+done
 """)
 
 
@@ -700,8 +909,8 @@ def main():
 
     print("=" * 60)
     print(
-        "ДЕНЬ 14 — "
-        "ИНВАРИАНТЫ И ОГРАНИЧЕНИЯ"
+        "ДЕНЬ 15 — "
+        "КОНТРОЛИРУЕМЫЕ ПЕРЕХОДЫ"
     )
     print("=" * 60)
 
@@ -712,12 +921,10 @@ def main():
 
     print()
     print(
-        "Task State: task_state.json"
+        "Состояние: task_state.json"
     )
 
-    print(
-        "Invariants: invariants.json"
-    )
+    agent.task_machine.show()
 
     show_help()
 
@@ -753,73 +960,60 @@ def main():
             agent.task_machine.show()
             continue
 
-        # INVARIANTS
-        if command == "invariants":
+        # RESET
+        if command == "reset":
 
-            agent.invariant_manager.show()
+            agent.task_machine.reset()
             continue
 
-        # ADD INVARIANT
-        if command.startswith(
-            "invariant "
-        ):
+        # START
+        if command.startswith("start "):
 
-            data = user_input.split(
+            task = user_input.split(
                 maxsplit=1
-            )[1]
+            )[1].strip()
 
-            result = parse_key_value(
-                data
-            )
-
-            if result is None:
-
-                print()
-                print(
-                    "Используй формат:"
-                )
-
-                print(
-                    "invariant "
-                    "architecture=MVVM"
-                )
-
-                continue
-
-            key, value = result
-
-            agent.invariant_manager.add(
-                key,
-                value
+            agent.task_machine.start_task(
+                task
             )
 
             continue
 
-        # REMOVE INVARIANT
-        if command.startswith(
-            "remove invariant "
-        ):
+        # APPROVE PLAN
+        if command == "approve plan":
 
-            key = user_input.split(
-                maxsplit=2
-            )[2].strip()
-
-            agent.invariant_manager.remove(
-                key
-            )
-
+            agent.task_machine.approve_plan()
             continue
 
-        # CLEAR INVARIANTS
-        if command == "clear invariants":
+        # COMPLETE IMPLEMENTATION
+        if command == "complete implementation":
 
-            agent.invariant_manager.clear()
+            agent.task_machine.complete_implementation()
+            continue
+
+        # PASS VALIDATION
+        if command == "pass validation":
+
+            agent.task_machine.pass_validation()
             continue
 
         # NEXT
         if command == "next":
 
             agent.task_machine.next_stage()
+            continue
+
+        # GOTO
+        if command.startswith("goto "):
+
+            target = command.split(
+                maxsplit=1
+            )[1]
+
+            agent.task_machine.transition_to(
+                target
+            )
+
             continue
 
         # PAUSE
@@ -834,31 +1028,8 @@ def main():
             agent.task_machine.resume()
             continue
 
-        # RESET
-        if command == "reset":
-
-            agent.task_machine.reset()
-            continue
-
-        # START
-        if command.startswith(
-            "start "
-        ):
-
-            task = user_input.split(
-                maxsplit=1
-            )[1].strip()
-
-            agent.task_machine.start_task(
-                task
-            )
-
-            continue
-
         # STEP
-        if command.startswith(
-            "step "
-        ):
+        if command.startswith("step "):
 
             data = user_input.split(
                 maxsplit=1
