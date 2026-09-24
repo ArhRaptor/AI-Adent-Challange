@@ -4,8 +4,10 @@ import json
 from google import genai
 from google.genai import types
 
-from mcp import Client, StdioServerParameters
-from mcp.types import TextContent
+from mcp import (
+    Client,
+    StdioServerParameters
+)
 
 
 # ============================================================
@@ -19,30 +21,19 @@ class WarehouseAgent:
         model="gemini-3.5-flash-lite"
     ):
 
-        self.gemini = genai.Client()
+        self.client = genai.Client()
         self.model = model
 
-    # --------------------------------------------------------
-    # GEMINI
-    # --------------------------------------------------------
-
-    def ask_gemini(
+    def create_summary(
         self,
-        user_message,
         tool_result
     ):
 
         prompt = f"""
-Ты AI-ассистент приложения склада.
+Ты AI-ассистент системы мониторинга склада.
 
-Пользователь задал вопрос:
-
-{user_message}
-
-
-Для ответа был вызван внешний MCP-инструмент.
-
-Результат MCP-инструмента:
+Ниже находится агрегированный результат,
+полученный через MCP-инструмент:
 
 {json.dumps(
     tool_result,
@@ -50,31 +41,30 @@ class WarehouseAgent:
     indent=2
 )}
 
+Сформируй краткую понятную сводку.
 
-Ответь пользователю на основании результата MCP.
+Укажи:
 
-Правила:
+- название товара;
+- количество измерений;
+- текущий остаток;
+- минимальный остаток;
+- максимальный остаток;
+- средний остаток;
+- время последнего измерения.
 
-1. Не придумывай данные о товаре.
-2. Используй результат MCP как источник данных.
-3. Если success=false, сообщи, что товар не найден.
-4. Если товар найден, кратко сообщи:
-   - название;
-   - количество;
-   - цену;
-   - склад.
-5. Если quantity=0, явно сообщи,
-   что товара сейчас нет в наличии.
+Не придумывай отсутствующие данные.
 """.strip()
 
         response = (
-            self.gemini.models.generate_content(
+            self.client.models.generate_content(
                 model=self.model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(
-                        thinking_level="minimal"
-                    )
+                    thinking_config=
+                        types.ThinkingConfig(
+                            thinking_level="minimal"
+                        )
                 )
             )
         )
@@ -83,13 +73,52 @@ class WarehouseAgent:
 
 
 # ============================================================
-# MCP
+# MCP RESULT
+# ============================================================
+
+def get_structured_result(
+    result
+):
+
+    if result.structured_content:
+
+        return result.structured_content
+
+    # Fallback
+
+    for block in result.content:
+
+        if hasattr(
+            block,
+            "text"
+        ):
+
+            try:
+
+                return json.loads(
+                    block.text
+                )
+
+            except json.JSONDecodeError:
+
+                return {
+                    "raw_result":
+                        block.text
+                }
+
+    return None
+
+
+# ============================================================
+# MAIN
 # ============================================================
 
 async def main():
 
     print("=" * 60)
-    print("ДЕНЬ 17 — ПЕРВЫЙ MCP TOOL")
+    print(
+        "ДЕНЬ 18 — MCP SCHEDULER"
+    )
     print("=" * 60)
 
     agent = WarehouseAgent()
@@ -99,201 +128,180 @@ async def main():
         args=["mcp_server.py"]
     )
 
-    print()
-    print("Подключаемся к MCP-серверу...")
-
-    async with Client(server) as client:
-
-        print()
-        print("MCP-соединение установлено.")
-
-        # ----------------------------------------------------
-        # LIST TOOLS
-        # ----------------------------------------------------
-
-        tools_result = await client.list_tools()
-
-        print()
-        print("=" * 60)
-        print("ДОСТУПНЫЕ MCP TOOLS")
-        print("=" * 60)
-
-        for tool in tools_result.tools:
-
-            print()
-            print(f"Name: {tool.name}")
-            print(
-                f"Description: "
-                f"{tool.description}"
-            )
-
-            print(
-                "Input schema:"
-            )
-
-            print(
-                json.dumps(
-                    tool.input_schema,
-                    ensure_ascii=False,
-                    indent=2
-                )
-            )
-
-        # ----------------------------------------------------
-        # USER INPUT
-        # ----------------------------------------------------
-
-        print()
-        print("=" * 60)
-        print("ВЫЗОВ MCP TOOL")
-        print("=" * 60)
+    async with Client(
+        server
+    ) as client:
 
         print()
         print(
-            "Доступные товары для теста: "
-            "101, 102, 103"
+            "MCP-соединение установлено."
+        )
+
+        print()
+        print(
+            "1 — Создать мониторинг"
+        )
+
+        print(
+            "2 — Показать задачи"
+        )
+
+        print(
+            "3 — Получить сводку"
         )
 
         print()
 
-        product_input = input(
-            "Введите ID товара: "
+        choice = input(
+            "Выберите действие: "
         ).strip()
 
-        try:
+        # ====================================================
+        # CREATE TASK
+        # ====================================================
+
+        if choice == "1":
 
             product_id = int(
-                product_input
+                input(
+                    "ID товара: "
+                )
             )
 
-        except ValueError:
+            interval = int(
+                input(
+                    "Интервал в секундах: "
+                )
+            )
+
+            result = await client.call_tool(
+                "create_monitoring_task",
+                {
+                    "product_id":
+                        product_id,
+
+                    "interval_seconds":
+                        interval
+                }
+            )
+
+            data = get_structured_result(
+                result
+            )
 
             print()
-            print(
-                "ID товара должен быть числом."
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # CALL TOOL
-        # ----------------------------------------------------
-
-        print()
-        print(
-            f"Вызываем MCP tool "
-            f"get_product(product_id={product_id})..."
-        )
-
-        result = await client.call_tool(
-            "get_product",
-            {
-                "product_id": product_id
-            }
-        )
-
-        # ----------------------------------------------------
-        # READ RESULT
-        # ----------------------------------------------------
-
-        print()
-        print("=" * 60)
-        print("СЫРОЙ РЕЗУЛЬТАТ MCP")
-        print("=" * 60)
-
-        tool_data = None
-
-        # Сначала пробуем structured_content.
-
-        if result.structured_content:
-
-            tool_data = (
-                result.structured_content
-            )
+            print("=" * 60)
+            print("РЕЗУЛЬТАТ")
+            print("=" * 60)
 
             print(
                 json.dumps(
-                    tool_data,
+                    data,
                     ensure_ascii=False,
                     indent=2
                 )
             )
+
+        # ====================================================
+        # LIST
+        # ====================================================
+
+        elif choice == "2":
+
+            result = await client.call_tool(
+                "list_tasks",
+                {}
+            )
+
+            data = get_structured_result(
+                result
+            )
+
+            print()
+            print("=" * 60)
+            print("ЗАДАЧИ")
+            print("=" * 60)
+
+            print(
+                json.dumps(
+                    data,
+                    ensure_ascii=False,
+                    indent=2
+                )
+            )
+
+        # ====================================================
+        # SUMMARY
+        # ====================================================
+
+        elif choice == "3":
+
+            product_id = int(
+                input(
+                    "ID товара: "
+                )
+            )
+
+            result = await client.call_tool(
+                "get_summary",
+                {
+                    "product_id":
+                        product_id
+                }
+            )
+
+            data = get_structured_result(
+                result
+            )
+
+            print()
+            print("=" * 60)
+            print("MCP SUMMARY")
+            print("=" * 60)
+
+            print(
+                json.dumps(
+                    data,
+                    ensure_ascii=False,
+                    indent=2
+                )
+            )
+
+            if (
+                data
+                and data.get(
+                    "success"
+                )
+            ):
+
+                print()
+                print("=" * 60)
+                print("AGENT SUMMARY")
+                print("=" * 60)
+
+                answer = (
+                    agent.create_summary(
+                        data
+                    )
+                )
+
+                print()
+                print(answer)
+
+            else:
+
+                print()
+                print(
+                    "Данных для сводки "
+                    "пока недостаточно."
+                )
 
         else:
 
-            # Fallback:
-            # читаем TextContent.
-
-            for block in result.content:
-
-                if isinstance(
-                    block,
-                    TextContent
-                ):
-
-                    print(block.text)
-
-                    try:
-
-                        tool_data = (
-                            json.loads(
-                                block.text
-                            )
-                        )
-
-                    except json.JSONDecodeError:
-
-                        tool_data = {
-                            "raw_result":
-                                block.text
-                        }
-
-        # ----------------------------------------------------
-        # ERROR
-        # ----------------------------------------------------
-
-        if result.is_error:
-
             print()
             print(
-                "MCP сообщил об ошибке "
-                "при выполнении инструмента."
+                "Неизвестная команда."
             )
-
-            return
-
-        if tool_data is None:
-
-            print()
-            print(
-                "Не удалось получить "
-                "результат инструмента."
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # USE RESULT IN AGENT
-        # ----------------------------------------------------
-
-        print()
-        print("=" * 60)
-        print("ПЕРЕДАЁМ РЕЗУЛЬТАТ АГЕНТУ")
-        print("=" * 60)
-
-        user_message = (
-            f"Расскажи мне о товаре "
-            f"с ID {product_id}."
-        )
-
-        answer = agent.ask_gemini(
-            user_message,
-            tool_data
-        )
-
-        print()
-        print("Агент:")
-        print(answer)
 
 
 # ============================================================

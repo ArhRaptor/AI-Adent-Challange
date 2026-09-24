@@ -1,75 +1,163 @@
 from mcp.server import MCPServer
 
+import uuid
+
+from storage import (
+    load_tasks,
+    save_tasks,
+    load_monitoring_data
+)
+
 
 mcp = MCPServer(
-    "Warehouse MCP Server",
-    instructions="MCP-сервер для работы с товарами склада."
+    "Warehouse Scheduler MCP",
+    instructions=(
+        "MCP-сервер для фонового "
+        "мониторинга склада."
+    )
 )
 
 
 # ============================================================
-# MOCK API
-# ============================================================
-
-PRODUCTS = {
-    101: {
-        "id": 101,
-        "name": "Ноутбук Lenovo ThinkBook",
-        "quantity": 7,
-        "price": 85000,
-        "warehouse": "Москва"
-    },
-
-    102: {
-        "id": 102,
-        "name": "Монитор Samsung 27",
-        "quantity": 0,
-        "price": 32000,
-        "warehouse": "Москва"
-    },
-
-    103: {
-        "id": 103,
-        "name": "Клавиатура Logitech",
-        "quantity": 24,
-        "price": 6500,
-        "warehouse": "Санкт-Петербург"
-    }
-}
-
-
-# ============================================================
-# MCP TOOL
+# CREATE TASK
 # ============================================================
 
 @mcp.tool(
-    title="Получить товар",
+    title="Создать мониторинг товара",
     description=(
-        "Возвращает информацию о товаре "
-        "на складе по его ID."
+        "Создаёт периодическую задачу "
+        "для мониторинга товара."
     )
 )
-def get_product(product_id: int) -> dict:
-    """
-    Получает товар из mock API склада.
+def create_monitoring_task(
+    product_id: int,
+    interval_seconds: int
+) -> dict:
 
-    Args:
-        product_id:
-            Уникальный числовой ID товара.
-    """
+    if interval_seconds < 5:
 
-    product = PRODUCTS.get(product_id)
-
-    if product is None:
         return {
             "success": False,
-            "error": "Товар не найден",
-            "product_id": product_id
+            "error": (
+                "Минимальный интервал "
+                "для учебного примера — "
+                "5 секунд."
+            )
         }
+
+    tasks = load_tasks()
+
+    task = {
+        "id": str(uuid.uuid4()),
+        "product_id": product_id,
+        "interval_seconds":
+            interval_seconds,
+        "enabled": True,
+        "last_run": None
+    }
+
+    tasks.append(task)
+
+    save_tasks(tasks)
 
     return {
         "success": True,
-        "product": product
+        "task": task
+    }
+
+
+# ============================================================
+# LIST TASKS
+# ============================================================
+
+@mcp.tool(
+    title="Список фоновых задач",
+    description=(
+        "Возвращает список "
+        "запланированных задач."
+    )
+)
+def list_tasks() -> dict:
+
+    tasks = load_tasks()
+
+    return {
+        "success": True,
+        "count": len(tasks),
+        "tasks": tasks
+    }
+
+
+# ============================================================
+# SUMMARY
+# ============================================================
+
+@mcp.tool(
+    title="Сводка мониторинга",
+    description=(
+        "Возвращает агрегированную "
+        "сводку собранных данных "
+        "по товару."
+    )
+)
+def get_summary(
+    product_id: int
+) -> dict:
+
+    data = load_monitoring_data()
+
+    records = [
+        record
+        for record in data
+        if record["product"]["id"]
+        == product_id
+    ]
+
+    if not records:
+
+        return {
+            "success": False,
+            "error": (
+                "Данных мониторинга "
+                "пока нет."
+            ),
+            "product_id": product_id
+        }
+
+    quantities = [
+        record["product"]["quantity"]
+        for record in records
+    ]
+
+    latest = records[-1]
+
+    return {
+        "success": True,
+
+        "product_id":
+            product_id,
+
+        "product_name":
+            latest["product"]["name"],
+
+        "measurements":
+            len(records),
+
+        "current_quantity":
+            quantities[-1],
+
+        "min_quantity":
+            min(quantities),
+
+        "max_quantity":
+            max(quantities),
+
+        "average_quantity":
+            sum(quantities)
+            / len(quantities),
+
+        "last_measurement":
+            latest["timestamp"]
     }
 
 
