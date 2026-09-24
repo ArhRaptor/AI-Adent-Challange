@@ -1,19 +1,98 @@
 import anyio
+import json
+
+from google import genai
+from google.genai import types
 
 from mcp import Client, StdioServerParameters
+from mcp.types import TextContent
 
+
+# ============================================================
+# AGENT
+# ============================================================
+
+class WarehouseAgent:
+
+    def __init__(
+        self,
+        model="gemini-3.5-flash-lite"
+    ):
+
+        self.gemini = genai.Client()
+        self.model = model
+
+    # --------------------------------------------------------
+    # GEMINI
+    # --------------------------------------------------------
+
+    def ask_gemini(
+        self,
+        user_message,
+        tool_result
+    ):
+
+        prompt = f"""
+Ты AI-ассистент приложения склада.
+
+Пользователь задал вопрос:
+
+{user_message}
+
+
+Для ответа был вызван внешний MCP-инструмент.
+
+Результат MCP-инструмента:
+
+{json.dumps(
+    tool_result,
+    ensure_ascii=False,
+    indent=2
+)}
+
+
+Ответь пользователю на основании результата MCP.
+
+Правила:
+
+1. Не придумывай данные о товаре.
+2. Используй результат MCP как источник данных.
+3. Если success=false, сообщи, что товар не найден.
+4. Если товар найден, кратко сообщи:
+   - название;
+   - количество;
+   - цену;
+   - склад.
+5. Если quantity=0, явно сообщи,
+   что товара сейчас нет в наличии.
+""".strip()
+
+        response = (
+            self.gemini.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level="minimal"
+                    )
+                )
+            )
+        )
+
+        return response.text
+
+
+# ============================================================
+# MCP
+# ============================================================
 
 async def main():
 
     print("=" * 60)
-    print("ДЕНЬ 16 — MCP CLIENT")
+    print("ДЕНЬ 17 — ПЕРВЫЙ MCP TOOL")
     print("=" * 60)
 
-    # Описываем локальный MCP-сервер.
-    #
-    # Клиент сам запустит:
-    #
-    # py mcp_server.py
+    agent = WarehouseAgent()
 
     server = StdioServerParameters(
         command="py",
@@ -23,125 +102,203 @@ async def main():
     print()
     print("Подключаемся к MCP-серверу...")
 
-    try:
+    async with Client(server) as client:
 
-        # Вход в async with:
-        #
-        # 1. запускает MCP-сервер;
-        # 2. устанавливает соединение;
-        # 3. выполняет MCP handshake.
+        print()
+        print("MCP-соединение установлено.")
 
-        async with Client(server) as client:
+        # ----------------------------------------------------
+        # LIST TOOLS
+        # ----------------------------------------------------
+
+        tools_result = await client.list_tools()
+
+        print()
+        print("=" * 60)
+        print("ДОСТУПНЫЕ MCP TOOLS")
+        print("=" * 60)
+
+        for tool in tools_result.tools:
 
             print()
-            print("MCP-соединение установлено.")
-
-            # Информация о соединении
-
-            print()
-            print("-" * 60)
-            print("ИНФОРМАЦИЯ О СЕРВЕРЕ")
-            print("-" * 60)
-
-            if client.server_info:
-
-                print(
-                    f"Имя: "
-                    f"{client.server_info.name}"
-                )
-
-                print(
-                    f"Версия: "
-                    f"{client.server_info.version}"
-                )
-
+            print(f"Name: {tool.name}")
             print(
-                f"Версия протокола: "
-                f"{client.protocol_version}"
+                f"Description: "
+                f"{tool.description}"
             )
 
-            # --------------------------------------------
-            # Получаем инструменты
-            # --------------------------------------------
+            print(
+                "Input schema:"
+            )
 
-            print()
-            print("Запрашиваем список инструментов...")
-
-            result = await client.list_tools()
-
-            tools = result.tools
-
-            print()
-            print("=" * 60)
-            print("ДОСТУПНЫЕ MCP TOOLS")
-            print("=" * 60)
-
-            if not tools:
-
-                print()
-                print("Инструменты не найдены.")
-
-            else:
-
-                print()
-                print(
-                    f"Количество инструментов: "
-                    f"{len(tools)}"
+            print(
+                json.dumps(
+                    tool.input_schema,
+                    ensure_ascii=False,
+                    indent=2
                 )
+            )
 
-                for index, tool in enumerate(
-                    tools,
-                    start=1
+        # ----------------------------------------------------
+        # USER INPUT
+        # ----------------------------------------------------
+
+        print()
+        print("=" * 60)
+        print("ВЫЗОВ MCP TOOL")
+        print("=" * 60)
+
+        print()
+        print(
+            "Доступные товары для теста: "
+            "101, 102, 103"
+        )
+
+        print()
+
+        product_input = input(
+            "Введите ID товара: "
+        ).strip()
+
+        try:
+
+            product_id = int(
+                product_input
+            )
+
+        except ValueError:
+
+            print()
+            print(
+                "ID товара должен быть числом."
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # CALL TOOL
+        # ----------------------------------------------------
+
+        print()
+        print(
+            f"Вызываем MCP tool "
+            f"get_product(product_id={product_id})..."
+        )
+
+        result = await client.call_tool(
+            "get_product",
+            {
+                "product_id": product_id
+            }
+        )
+
+        # ----------------------------------------------------
+        # READ RESULT
+        # ----------------------------------------------------
+
+        print()
+        print("=" * 60)
+        print("СЫРОЙ РЕЗУЛЬТАТ MCP")
+        print("=" * 60)
+
+        tool_data = None
+
+        # Сначала пробуем structured_content.
+
+        if result.structured_content:
+
+            tool_data = (
+                result.structured_content
+            )
+
+            print(
+                json.dumps(
+                    tool_data,
+                    ensure_ascii=False,
+                    indent=2
+                )
+            )
+
+        else:
+
+            # Fallback:
+            # читаем TextContent.
+
+            for block in result.content:
+
+                if isinstance(
+                    block,
+                    TextContent
                 ):
 
-                    print()
-                    print("-" * 60)
+                    print(block.text)
 
-                    print(
-                        f"TOOL #{index}"
-                    )
+                    try:
 
-                    print(
-                        f"Name: "
-                        f"{tool.name}"
-                    )
+                        tool_data = (
+                            json.loads(
+                                block.text
+                            )
+                        )
 
-                    print(
-                        f"Title: "
-                        f"{tool.title}"
-                    )
+                    except json.JSONDecodeError:
 
-                    print(
-                        f"Description: "
-                        f"{tool.description}"
-                    )
+                        tool_data = {
+                            "raw_result":
+                                block.text
+                        }
 
-                    print(
-                        f"Input schema: "
-                        f"{tool.input_schema}"
-                    )
+        # ----------------------------------------------------
+        # ERROR
+        # ----------------------------------------------------
 
-            print()
-            print("=" * 60)
-            print("ПРОВЕРКА ЗАВЕРШЕНА")
-            print("=" * 60)
+        if result.is_error:
 
             print()
             print(
-                "MCP-клиент успешно получил "
-                "список инструментов."
+                "MCP сообщил об ошибке "
+                "при выполнении инструмента."
             )
 
-    except Exception as error:
+            return
+
+        if tool_data is None:
+
+            print()
+            print(
+                "Не удалось получить "
+                "результат инструмента."
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # USE RESULT IN AGENT
+        # ----------------------------------------------------
 
         print()
         print("=" * 60)
-        print("ОШИБКА MCP")
+        print("ПЕРЕДАЁМ РЕЗУЛЬТАТ АГЕНТУ")
         print("=" * 60)
 
-        print()
-        print(error)
+        user_message = (
+            f"Расскажи мне о товаре "
+            f"с ID {product_id}."
+        )
 
+        answer = agent.ask_gemini(
+            user_message,
+            tool_data
+        )
+
+        print()
+        print("Агент:")
+        print(answer)
+
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
     anyio.run(main)
