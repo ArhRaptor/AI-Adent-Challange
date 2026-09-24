@@ -1,163 +1,192 @@
+import os
+
 from mcp.server import MCPServer
 
-import uuid
-
-from storage import (
-    load_tasks,
-    save_tasks,
-    load_monitoring_data
-)
+from warehouse_api import search_products
 
 
 mcp = MCPServer(
-    "Warehouse Scheduler MCP",
+    "Warehouse Pipeline MCP",
     instructions=(
-        "MCP-сервер для фонового "
-        "мониторинга склада."
+        "MCP-сервер для демонстрации "
+        "композиции инструментов."
     )
 )
 
 
 # ============================================================
-# CREATE TASK
+# TOOL 1 — SEARCH
 # ============================================================
 
-@mcp.tool(
-    title="Создать мониторинг товара",
-    description=(
-        "Создаёт периодическую задачу "
-        "для мониторинга товара."
-    )
-)
-def create_monitoring_task(
-    product_id: int,
-    interval_seconds: int
-) -> dict:
+@mcp.tool()
+def search(query: str) -> dict:
+    """
+    Ищет товары по названию, ID или складу.
 
-    if interval_seconds < 5:
+    Args:
+        query: Поисковый запрос.
+    """
+
+    products = search_products(query)
+
+    return {
+        "success": True,
+        "query": query,
+        "count": len(products),
+        "products": products
+    }
+
+
+# ============================================================
+# TOOL 2 — SUMMARIZE
+# ============================================================
+
+@mcp.tool()
+def summarize(search_result: dict) -> dict:
+    """
+    Создаёт текстовую сводку по результату поиска.
+
+    Args:
+        search_result:
+            Структурированный результат
+            инструмента search.
+    """
+
+    products = search_result.get(
+        "products",
+        []
+    )
+
+    query = search_result.get(
+        "query",
+        ""
+    )
+
+    if not products:
+
+        summary = (
+            f"По запросу «{query}» "
+            f"товары не найдены."
+        )
 
         return {
-            "success": False,
-            "error": (
-                "Минимальный интервал "
-                "для учебного примера — "
-                "5 секунд."
+            "success": True,
+            "summary": summary,
+            "products_count": 0
+        }
+
+    total_quantity = sum(
+        product["quantity"]
+        for product in products
+    )
+
+    total_value = sum(
+        product["quantity"]
+        * product["price"]
+        for product in products
+    )
+
+    out_of_stock = [
+        product["name"]
+        for product in products
+        if product["quantity"] == 0
+    ]
+
+    lines = [
+        f"Сводка по запросу: {query}",
+        "",
+        f"Найдено товаров: {len(products)}",
+        f"Общий остаток: {total_quantity}",
+        f"Стоимость остатков: {total_value} руб.",
+        "",
+        "Товары:"
+    ]
+
+    for product in products:
+
+        lines.append(
+            f"- {product['name']}: "
+            f"{product['quantity']} шт., "
+            f"{product['price']} руб., "
+            f"склад: {product['warehouse']}"
+        )
+
+    if out_of_stock:
+
+        lines.append("")
+        lines.append(
+            "Нет в наличии:"
+        )
+
+        for name in out_of_stock:
+            lines.append(
+                f"- {name}"
             )
-        }
 
-    tasks = load_tasks()
-
-    task = {
-        "id": str(uuid.uuid4()),
-        "product_id": product_id,
-        "interval_seconds":
-            interval_seconds,
-        "enabled": True,
-        "last_run": None
-    }
-
-    tasks.append(task)
-
-    save_tasks(tasks)
+    summary = "\n".join(lines)
 
     return {
         "success": True,
-        "task": task
+        "summary": summary,
+        "products_count": len(products),
+        "total_quantity": total_quantity,
+        "total_value": total_value,
+        "out_of_stock": out_of_stock
     }
 
 
 # ============================================================
-# LIST TASKS
+# TOOL 3 — SAVE TO FILE
 # ============================================================
 
-@mcp.tool(
-    title="Список фоновых задач",
-    description=(
-        "Возвращает список "
-        "запланированных задач."
-    )
-)
-def list_tasks() -> dict:
-
-    tasks = load_tasks()
-
-    return {
-        "success": True,
-        "count": len(tasks),
-        "tasks": tasks
-    }
-
-
-# ============================================================
-# SUMMARY
-# ============================================================
-
-@mcp.tool(
-    title="Сводка мониторинга",
-    description=(
-        "Возвращает агрегированную "
-        "сводку собранных данных "
-        "по товару."
-    )
-)
-def get_summary(
-    product_id: int
+@mcp.tool()
+def save_to_file(
+    content: str,
+    filename: str = "warehouse_report.txt"
 ) -> dict:
+    """
+    Сохраняет текстовую сводку в файл.
 
-    data = load_monitoring_data()
+    Args:
+        content:
+            Текст для сохранения.
 
-    records = [
-        record
-        for record in data
-        if record["product"]["id"]
-        == product_id
-    ]
+        filename:
+            Имя выходного файла.
+    """
 
-    if not records:
+    reports_dir = "reports"
 
-        return {
-            "success": False,
-            "error": (
-                "Данных мониторинга "
-                "пока нет."
-            ),
-            "product_id": product_id
-        }
+    os.makedirs(
+        reports_dir,
+        exist_ok=True
+    )
 
-    quantities = [
-        record["product"]["quantity"]
-        for record in records
-    ]
+    # Не позволяем выйти из reports
+    # через путь вроде ../../file.txt
 
-    latest = records[-1]
+    safe_filename = os.path.basename(
+        filename
+    )
+
+    file_path = os.path.join(
+        reports_dir,
+        safe_filename
+    )
+
+    with open(
+        file_path,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        file.write(content)
 
     return {
         "success": True,
-
-        "product_id":
-            product_id,
-
-        "product_name":
-            latest["product"]["name"],
-
-        "measurements":
-            len(records),
-
-        "current_quantity":
-            quantities[-1],
-
-        "min_quantity":
-            min(quantities),
-
-        "max_quantity":
-            max(quantities),
-
-        "average_quantity":
-            sum(quantities)
-            / len(quantities),
-
-        "last_measurement":
-            latest["timestamp"]
+        "filename": safe_filename,
+        "path": file_path,
+        "characters_written": len(content)
     }
 
 

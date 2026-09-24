@@ -21,14 +21,33 @@ PRODUCTS = {
         "quantity": 24,
         "price": 6500,
         "warehouse": "Санкт-Петербург"
+    },
+
+    104: {
+        "id": 104,
+        "name": "Мышь Logitech",
+        "quantity": 15,
+        "price": 3500,
+        "warehouse": "Москва"
     }
 }
 
 
-def get_product(
-    product_id: int
-):
+def search_products(query: str) -> list[dict]:
 
-    return PRODUCTS.get(
-        product_id
-    )
+    query = query.lower().strip()
+
+    result = []
+
+    for product in PRODUCTS.values():
+
+        searchable_text = (
+            f"{product['id']} "
+            f"{product['name']} "
+            f"{product['warehouse']}"
+        ).lower()
+
+        if query in searchable_text:
+            result.append(product)
+
+    return result

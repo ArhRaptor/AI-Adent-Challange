@@ -1,9 +1,6 @@
 import anyio
 import json
 
-from google import genai
-from google.genai import types
-
 from mcp import (
     Client,
     StdioServerParameters
@@ -11,80 +8,22 @@ from mcp import (
 
 
 # ============================================================
-# AGENT
+# RESULT HELPER
 # ============================================================
 
-class WarehouseAgent:
+def get_result(result) -> dict | None:
 
-    def __init__(
-        self,
-        model="gemini-3.5-flash-lite"
-    ):
+    if result.is_error:
 
-        self.client = genai.Client()
-        self.model = model
-
-    def create_summary(
-        self,
-        tool_result
-    ):
-
-        prompt = f"""
-Ты AI-ассистент системы мониторинга склада.
-
-Ниже находится агрегированный результат,
-полученный через MCP-инструмент:
-
-{json.dumps(
-    tool_result,
-    ensure_ascii=False,
-    indent=2
-)}
-
-Сформируй краткую понятную сводку.
-
-Укажи:
-
-- название товара;
-- количество измерений;
-- текущий остаток;
-- минимальный остаток;
-- максимальный остаток;
-- средний остаток;
-- время последнего измерения.
-
-Не придумывай отсутствующие данные.
-""".strip()
-
-        response = (
-            self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    thinking_config=
-                        types.ThinkingConfig(
-                            thinking_level="minimal"
-                        )
-                )
-            )
+        print(
+            "MCP Tool вернул ошибку."
         )
 
-        return response.text
-
-
-# ============================================================
-# MCP RESULT
-# ============================================================
-
-def get_structured_result(
-    result
-):
+        return None
 
     if result.structured_content:
 
         return result.structured_content
-
-    # Fallback
 
     for block in result.content:
 
@@ -102,11 +41,182 @@ def get_structured_result(
             except json.JSONDecodeError:
 
                 return {
-                    "raw_result":
-                        block.text
+                    "text": block.text
                 }
 
     return None
+
+
+# ============================================================
+# PIPELINE
+# ============================================================
+
+async def run_pipeline(
+    client,
+    query: str
+):
+
+    print()
+    print("=" * 60)
+    print("MCP PIPELINE")
+    print("=" * 60)
+
+    # ========================================================
+    # STEP 1
+    # SEARCH
+    # ========================================================
+
+    print()
+    print("[1/3] SEARCH")
+    print("-" * 60)
+
+    search_response = (
+        await client.call_tool(
+            "search",
+            {
+                "query": query
+            }
+        )
+    )
+
+    search_result = get_result(
+        search_response
+    )
+
+    if search_result is None:
+        print(
+            "Pipeline остановлен "
+            "на этапе search."
+        )
+        return
+
+    print(
+        json.dumps(
+            search_result,
+            ensure_ascii=False,
+            indent=2
+        )
+    )
+
+    # ========================================================
+    # STEP 2
+    # SUMMARIZE
+    # ========================================================
+
+    print()
+    print("[2/3] SUMMARIZE")
+    print("-" * 60)
+
+    print(
+        "Передаём результат search "
+        "в summarize..."
+    )
+
+    summarize_response = (
+        await client.call_tool(
+            "summarize",
+            {
+                "search_result":
+                    search_result
+            }
+        )
+    )
+
+    summary_result = get_result(
+        summarize_response
+    )
+
+    if summary_result is None:
+        print(
+            "Pipeline остановлен "
+            "на этапе summarize."
+        )
+        return
+
+    print()
+    print(
+        summary_result.get(
+            "summary"
+        )
+    )
+
+    # ========================================================
+    # STEP 3
+    # SAVE
+    # ========================================================
+
+    print()
+    print("[3/3] SAVE TO FILE")
+    print("-" * 60)
+
+    print(
+        "Передаём результат summarize "
+        "в save_to_file..."
+    )
+
+    summary_text = (
+        summary_result.get(
+            "summary",
+            ""
+        )
+    )
+
+    save_response = (
+        await client.call_tool(
+            "save_to_file",
+            {
+                "content":
+                    summary_text,
+
+                "filename":
+                    "warehouse_report.txt"
+            }
+        )
+    )
+
+    save_result = get_result(
+        save_response
+    )
+
+    if save_result is None:
+        print(
+            "Pipeline остановлен "
+            "на этапе save_to_file."
+        )
+        return
+
+    print(
+        json.dumps(
+            save_result,
+            ensure_ascii=False,
+            indent=2
+        )
+    )
+
+    # ========================================================
+    # DONE
+    # ========================================================
+
+    print()
+    print("=" * 60)
+    print("PIPELINE COMPLETED")
+    print("=" * 60)
+
+    print()
+    print(
+        f"Search: "
+        f"{search_result['count']} товаров"
+    )
+
+    print(
+        f"Summary: "
+        f"{summary_result['products_count']} товаров"
+    )
+
+    print(
+        f"Saved: "
+        f"{save_result['path']}"
+    )
 
 
 # ============================================================
@@ -117,11 +227,9 @@ async def main():
 
     print("=" * 60)
     print(
-        "ДЕНЬ 18 — MCP SCHEDULER"
+        "ДЕНЬ 19 — MCP TOOL COMPOSITION"
     )
     print("=" * 60)
-
-    agent = WarehouseAgent()
 
     server = StdioServerParameters(
         command="py",
@@ -137,171 +245,46 @@ async def main():
             "MCP-соединение установлено."
         )
 
-        print()
-        print(
-            "1 — Создать мониторинг"
-        )
+        # ----------------------------------------------------
+        # Показываем доступные tools
+        # ----------------------------------------------------
 
-        print(
-            "2 — Показать задачи"
-        )
-
-        print(
-            "3 — Получить сводку"
-        )
+        tools = await client.list_tools()
 
         print()
+        print("Доступные инструменты:")
 
-        choice = input(
-            "Выберите действие: "
+        for tool in tools.tools:
+            print(
+                f"- {tool.name}"
+            )
+
+        # ----------------------------------------------------
+        # User
+        # ----------------------------------------------------
+
+        print()
+
+        query = input(
+            "Что ищем: "
         ).strip()
 
-        # ====================================================
-        # CREATE TASK
-        # ====================================================
-
-        if choice == "1":
-
-            product_id = int(
-                input(
-                    "ID товара: "
-                )
-            )
-
-            interval = int(
-                input(
-                    "Интервал в секундах: "
-                )
-            )
-
-            result = await client.call_tool(
-                "create_monitoring_task",
-                {
-                    "product_id":
-                        product_id,
-
-                    "interval_seconds":
-                        interval
-                }
-            )
-
-            data = get_structured_result(
-                result
-            )
-
-            print()
-            print("=" * 60)
-            print("РЕЗУЛЬТАТ")
-            print("=" * 60)
+        if not query:
 
             print(
-                json.dumps(
-                    data,
-                    ensure_ascii=False,
-                    indent=2
-                )
+                "Поисковый запрос пуст."
             )
 
-        # ====================================================
-        # LIST
-        # ====================================================
+            return
 
-        elif choice == "2":
+        # ----------------------------------------------------
+        # AUTOMATIC PIPELINE
+        # ----------------------------------------------------
 
-            result = await client.call_tool(
-                "list_tasks",
-                {}
-            )
-
-            data = get_structured_result(
-                result
-            )
-
-            print()
-            print("=" * 60)
-            print("ЗАДАЧИ")
-            print("=" * 60)
-
-            print(
-                json.dumps(
-                    data,
-                    ensure_ascii=False,
-                    indent=2
-                )
-            )
-
-        # ====================================================
-        # SUMMARY
-        # ====================================================
-
-        elif choice == "3":
-
-            product_id = int(
-                input(
-                    "ID товара: "
-                )
-            )
-
-            result = await client.call_tool(
-                "get_summary",
-                {
-                    "product_id":
-                        product_id
-                }
-            )
-
-            data = get_structured_result(
-                result
-            )
-
-            print()
-            print("=" * 60)
-            print("MCP SUMMARY")
-            print("=" * 60)
-
-            print(
-                json.dumps(
-                    data,
-                    ensure_ascii=False,
-                    indent=2
-                )
-            )
-
-            if (
-                data
-                and data.get(
-                    "success"
-                )
-            ):
-
-                print()
-                print("=" * 60)
-                print("AGENT SUMMARY")
-                print("=" * 60)
-
-                answer = (
-                    agent.create_summary(
-                        data
-                    )
-                )
-
-                print()
-                print(answer)
-
-            else:
-
-                print()
-                print(
-                    "Данных для сводки "
-                    "пока недостаточно."
-                )
-
-        else:
-
-            print()
-            print(
-                "Неизвестная команда."
-            )
+        await run_pipeline(
+            client,
+            query
+        )
 
 
 # ============================================================
