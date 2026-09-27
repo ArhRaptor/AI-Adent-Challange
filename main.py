@@ -1,6 +1,9 @@
 import anyio
 import json
 
+from google import genai
+from google.genai import types
+
 from mcp import (
     Client,
     StdioServerParameters
@@ -8,32 +11,22 @@ from mcp import (
 
 
 # ============================================================
-# RESULT HELPER
+# MCP RESULT
 # ============================================================
 
-def get_result(result) -> dict | None:
+def get_result(result):
 
     if result.is_error:
-
-        print(
-            "MCP Tool вернул ошибку."
-        )
-
         return None
 
     if result.structured_content:
-
         return result.structured_content
 
     for block in result.content:
 
-        if hasattr(
-            block,
-            "text"
-        ):
+        if hasattr(block, "text"):
 
             try:
-
                 return json.loads(
                     block.text
                 )
@@ -48,174 +41,357 @@ def get_result(result) -> dict | None:
 
 
 # ============================================================
-# PIPELINE
+# ROUTER
 # ============================================================
 
-async def run_pipeline(
-    client,
-    query: str
+class AgentRouter:
+
+    def __init__(self):
+
+        self.client = genai.Client()
+
+        self.model = (
+            "gemini-3.5-flash-lite"
+        )
+
+    def route(
+        self,
+        user_message
+    ):
+
+        prompt = f"""
+Ты маршрутизатор MCP-инструментов.
+
+Доступны три типа операций:
+
+1. search
+   Используй, если пользователь хочет
+   найти или показать товары.
+
+2. analyze
+   Используй, если пользователь хочет
+   найти товары и провести анализ.
+
+3. full_report
+   Используй, если пользователь хочет:
+   найти товары,
+   проанализировать их
+   и сохранить отчёт.
+
+Верни ТОЛЬКО JSON.
+
+Формат:
+
+{{
+  "route": "search | analyze | full_report",
+  "query": "поисковый запрос"
+}}
+
+Примеры:
+
+"Найди товары в Москве"
+
+{{
+  "route": "search",
+  "query": "Москва"
+}}
+
+"Проанализируй товары Logitech"
+
+{{
+  "route": "analyze",
+  "query": "Logitech"
+}}
+
+"Найди товары в Москве,
+проанализируй остатки
+и сохрани отчёт"
+
+{{
+  "route": "full_report",
+  "query": "Москва"
+}}
+
+Запрос пользователя:
+
+{user_message}
+""".strip()
+
+        response = (
+            self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type=(
+                        "application/json"
+                    ),
+                    thinking_config=
+                        types.ThinkingConfig(
+                            thinking_level="minimal"
+                        )
+                )
+            )
+        )
+
+        return json.loads(
+            response.text
+        )
+
+
+# ============================================================
+# SEARCH
+# ============================================================
+
+async def search_step(
+    warehouse_client,
+    query
 ):
 
     print()
     print("=" * 60)
-    print("MCP PIPELINE")
+    print(
+        "SERVER: WAREHOUSE"
+    )
+    print(
+        "TOOL: search_products"
+    )
     print("=" * 60)
 
-    # ========================================================
+    result = await warehouse_client.call_tool(
+        "search_products",
+        {
+            "query": query
+        }
+    )
+
+    data = get_result(result)
+
+    print(
+        json.dumps(
+            data,
+            ensure_ascii=False,
+            indent=2
+        )
+    )
+
+    return data
+
+
+# ============================================================
+# ANALYTICS
+# ============================================================
+
+async def analytics_step(
+    analytics_client,
+    products
+):
+
+    print()
+    print("=" * 60)
+    print(
+        "SERVER: ANALYTICS"
+    )
+    print(
+        "TOOL: analyze_products"
+    )
+    print("=" * 60)
+
+    result = await analytics_client.call_tool(
+        "analyze_products",
+        {
+            "products": products
+        }
+    )
+
+    data = get_result(result)
+
+    print(
+        json.dumps(
+            data,
+            ensure_ascii=False,
+            indent=2
+        )
+    )
+
+    return data
+
+
+# ============================================================
+# SAVE
+# ============================================================
+
+async def save_step(
+    report_client,
+    report
+):
+
+    print()
+    print("=" * 60)
+    print(
+        "SERVER: REPORT"
+    )
+    print(
+        "TOOL: save_report"
+    )
+    print("=" * 60)
+
+    result = await report_client.call_tool(
+        "save_report",
+        {
+            "content": report,
+            "filename":
+                "warehouse_report.txt"
+        }
+    )
+
+    data = get_result(result)
+
+    print(
+        json.dumps(
+            data,
+            ensure_ascii=False,
+            indent=2
+        )
+    )
+
+    return data
+
+
+# ============================================================
+# ORCHESTRATOR
+# ============================================================
+
+async def orchestrate(
+    route,
+    query,
+    warehouse_client,
+    analytics_client,
+    report_client
+):
+
+    # --------------------------------------------------------
     # STEP 1
-    # SEARCH
-    # ========================================================
+    # Warehouse Server
+    # --------------------------------------------------------
 
-    print()
-    print("[1/3] SEARCH")
-    print("-" * 60)
-
-    search_response = (
-        await client.call_tool(
-            "search",
-            {
-                "query": query
-            }
-        )
+    search_data = await search_step(
+        warehouse_client,
+        query
     )
 
-    search_result = get_result(
-        search_response
-    )
+    if not search_data:
 
-    if search_result is None:
         print(
-            "Pipeline остановлен "
-            "на этапе search."
+            "Ошибка на этапе поиска."
         )
+
         return
 
-    print(
-        json.dumps(
-            search_result,
-            ensure_ascii=False,
-            indent=2
-        )
-    )
+    # Только поиск
+    if route == "search":
 
-    # ========================================================
+        print()
+        print("=" * 60)
+        print("FLOW COMPLETED")
+        print("=" * 60)
+
+        print(
+            "Маршрут: Warehouse"
+        )
+
+        return
+
+    # --------------------------------------------------------
     # STEP 2
-    # SUMMARIZE
-    # ========================================================
+    # Analytics Server
+    # --------------------------------------------------------
 
-    print()
-    print("[2/3] SUMMARIZE")
-    print("-" * 60)
-
-    print(
-        "Передаём результат search "
-        "в summarize..."
-    )
-
-    summarize_response = (
-        await client.call_tool(
-            "summarize",
-            {
-                "search_result":
-                    search_result
-            }
+    analytics_data = (
+        await analytics_step(
+            analytics_client,
+            search_data.get(
+                "products",
+                []
+            )
         )
     )
 
-    summary_result = get_result(
-        summarize_response
-    )
+    if not analytics_data:
 
-    if summary_result is None:
         print(
-            "Pipeline остановлен "
-            "на этапе summarize."
+            "Ошибка на этапе анализа."
         )
+
         return
 
-    print()
-    print(
-        summary_result.get(
-            "summary"
-        )
-    )
+    # Поиск + анализ
+    if route == "analyze":
 
-    # ========================================================
+        print()
+        print("=" * 60)
+        print("FLOW COMPLETED")
+        print("=" * 60)
+
+        print(
+            "Маршрут:"
+        )
+
+        print(
+            "Warehouse → Analytics"
+        )
+
+        return
+
+    # --------------------------------------------------------
     # STEP 3
-    # SAVE
-    # ========================================================
+    # Report Server
+    # --------------------------------------------------------
 
-    print()
-    print("[3/3] SAVE TO FILE")
-    print("-" * 60)
+    if route == "full_report":
 
-    print(
-        "Передаём результат summarize "
-        "в save_to_file..."
-    )
-
-    summary_text = (
-        summary_result.get(
-            "summary",
-            ""
+        save_data = await save_step(
+            report_client,
+            analytics_data.get(
+                "report",
+                ""
+            )
         )
-    )
 
-    save_response = (
-        await client.call_tool(
-            "save_to_file",
-            {
-                "content":
-                    summary_text,
+        if not save_data:
 
-                "filename":
-                    "warehouse_report.txt"
-            }
-        )
-    )
+            print(
+                "Ошибка сохранения."
+            )
 
-    save_result = get_result(
-        save_response
-    )
+            return
 
-    if save_result is None:
+        print()
+        print("=" * 60)
+        print("FLOW COMPLETED")
+        print("=" * 60)
+
         print(
-            "Pipeline остановлен "
-            "на этапе save_to_file."
+            "Маршрут:"
         )
+
+        print(
+            "Warehouse"
+            " → Analytics"
+            " → Report"
+        )
+
+        print()
+
+        print(
+            f"Отчёт сохранён: "
+            f"{save_data['path']}"
+        )
+
         return
 
     print(
-        json.dumps(
-            save_result,
-            ensure_ascii=False,
-            indent=2
-        )
-    )
-
-    # ========================================================
-    # DONE
-    # ========================================================
-
-    print()
-    print("=" * 60)
-    print("PIPELINE COMPLETED")
-    print("=" * 60)
-
-    print()
-    print(
-        f"Search: "
-        f"{search_result['count']} товаров"
-    )
-
-    print(
-        f"Summary: "
-        f"{summary_result['products_count']} товаров"
-    )
-
-    print(
-        f"Saved: "
-        f"{save_result['path']}"
+        f"Неизвестный маршрут: "
+        f"{route}"
     )
 
 
@@ -227,64 +403,130 @@ async def main():
 
     print("=" * 60)
     print(
-        "ДЕНЬ 19 — MCP TOOL COMPOSITION"
+        "ДЕНЬ 20 — MCP ORCHESTRATION"
     )
     print("=" * 60)
 
-    server = StdioServerParameters(
-        command="py",
-        args=["mcp_server.py"]
+    router = AgentRouter()
+
+    # --------------------------------------------------------
+    # THREE MCP SERVERS
+    # --------------------------------------------------------
+
+    warehouse_server = (
+        StdioServerParameters(
+            command="py",
+            args=[
+                "warehouse_server.py"
+            ]
+        )
     )
 
+    analytics_server = (
+        StdioServerParameters(
+            command="py",
+            args=[
+                "analytics_server.py"
+            ]
+        )
+    )
+
+    report_server = (
+        StdioServerParameters(
+            command="py",
+            args=[
+                "report_server.py"
+            ]
+        )
+    )
+
+    # --------------------------------------------------------
+    # CONNECT
+    # --------------------------------------------------------
+
     async with Client(
-        server
-    ) as client:
+        warehouse_server
+    ) as warehouse_client:
 
-        print()
-        print(
-            "MCP-соединение установлено."
-        )
+        async with Client(
+            analytics_server
+        ) as analytics_client:
 
-        # ----------------------------------------------------
-        # Показываем доступные tools
-        # ----------------------------------------------------
+            async with Client(
+                report_server
+            ) as report_client:
 
-        tools = await client.list_tools()
+                print()
+                print(
+                    "Подключено MCP-серверов: 3"
+                )
 
-        print()
-        print("Доступные инструменты:")
+                print(
+                    "- Warehouse"
+                )
 
-        for tool in tools.tools:
-            print(
-                f"- {tool.name}"
-            )
+                print(
+                    "- Analytics"
+                )
 
-        # ----------------------------------------------------
-        # User
-        # ----------------------------------------------------
+                print(
+                    "- Report"
+                )
 
-        print()
+                # --------------------------------------------
+                # USER REQUEST
+                # --------------------------------------------
 
-        query = input(
-            "Что ищем: "
-        ).strip()
+                print()
 
-        if not query:
+                user_message = input(
+                    "Вы: "
+                ).strip()
 
-            print(
-                "Поисковый запрос пуст."
-            )
+                if not user_message:
+                    return
 
-            return
+                # --------------------------------------------
+                # AGENT ROUTING
+                # --------------------------------------------
 
-        # ----------------------------------------------------
-        # AUTOMATIC PIPELINE
-        # ----------------------------------------------------
+                decision = router.route(
+                    user_message
+                )
 
-        await run_pipeline(
-            client,
-            query
-        )
+                route = decision.get(
+                    "route"
+                )
+
+                query = decision.get(
+                    "query",
+                    ""
+                )
+
+                print()
+                print("=" * 60)
+                print("AGENT ROUTER")
+                print("=" * 60)
+
+                print(
+                    f"Route: {route}"
+                )
+
+                print(
+                    f"Query: {query}"
+                )
+
+                # --------------------------------------------
+                # FLOW
+                # --------------------------------------------
+
+                await orchestrate(
+                    route,
+                    query,
+                    warehouse_client,
+                    analytics_client,
+                    report_client
+                )
 
 
 # ============================================================

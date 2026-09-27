@@ -1,66 +1,61 @@
-# День 19 — Композиция MCP-инструментов
+# День 20 — Orchestration MCP
 
 ## Цель
 
-Реализовать автоматический pipeline из нескольких MCP-инструментов, где результат одного инструмента становится входными данными следующего.
+Реализовать оркестрацию нескольких MCP-серверов и инструментов.
 
-В проекте реализована цепочка:
+Система должна:
 
-```text
-search
-   ↓
-summarize
-   ↓
-save_to_file
-```
-
-Каждый этап является отдельным MCP Tool.
-
----
-
-# Задача
-
-Pipeline должен автоматически:
-
-1. найти данные;
-2. обработать найденные данные;
-3. сформировать сводку;
-4. сохранить результат в файл.
-
-Главное требование — корректная передача результатов между MCP-инструментами.
+- подключаться к нескольким MCP-серверам;
+- принимать запрос пользователя на естественном языке;
+- определять необходимый маршрут;
+- выбирать нужные инструменты;
+- вызывать инструменты с разных MCP-серверов;
+- передавать результаты между инструментами;
+- выполнять длинный многошаговый flow.
 
 ---
 
 # Архитектура
 
-Общая схема:
+В проекте используются три независимых MCP-сервера:
 
 ```text
-USER
- ↓
-main.py
- ↓
-MCP Client
- ↓
-┌─────────────────────────┐
-│       MCP Server        │
-│                         │
-│  search                 │
-│    ↓                    │
-│  summarize              │
-│    ↓                    │
-│  save_to_file           │
-│                         │
-└─────────────────────────┘
- ↓
-reports/
- ↓
-warehouse_report.txt
+Warehouse MCP Server
+├── search_products
+└── get_product
+
+Analytics MCP Server
+└── analyze_products
+
+Report MCP Server
+└── save_report
 ```
 
-Pipeline запускается одной пользовательской командой.
+Над ними находится агент-маршрутизатор:
 
-После запуска следующие инструменты выполняются автоматически.
+```text
+                    ┌─────────────────────┐
+                    │        USER         │
+                    └──────────┬──────────┘
+                               ↓
+                    ┌─────────────────────┐
+                    │    Gemini Router    │
+                    └──────────┬──────────┘
+                               ↓
+                     выбор маршрута
+                               ↓
+             ┌─────────────────┼─────────────────┐
+             ↓                 ↓                 ↓
+         search             analyze         full_report
+             │                 │                 │
+             ↓                 ↓                 ↓
+        Warehouse         Warehouse          Warehouse
+                               ↓                 ↓
+                          Analytics          Analytics
+                                                 ↓
+                                              Report
+```
 
 ---
 
@@ -69,96 +64,60 @@ Pipeline запускается одной пользовательской ко
 ```text
 .
 ├── main.py
-├── mcp_server.py
-├── warehouse_api.py
+├── warehouse_server.py
+├── analytics_server.py
+├── report_server.py
 ├── README.md
 └── reports/
     └── warehouse_report.txt
 ```
 
-### main.py
-
-Содержит:
-
-```text
-MCP Client
-+
-Pipeline Orchestrator
-```
-
-Он определяет порядок выполнения инструментов и передаёт результаты между ними.
-
-### mcp_server.py
-
-Содержит три MCP-инструмента:
-
-```text
-search
-summarize
-save_to_file
-```
-
-### warehouse_api.py
-
-Содержит Mock API склада и функцию поиска товаров.
-
-### reports/
-
-Каталог, в который MCP-инструмент сохраняет итоговый отчёт.
+`reports/` содержит генерируемые программой файлы и может быть добавлен в `.gitignore`.
 
 ---
 
-# Pipeline
+# Компоненты
 
-Полная цепочка выглядит так:
+## main.py
 
-```text
-QUERY
-  ↓
-search(query)
-  ↓
-SEARCH RESULT
-  ↓
-summarize(search_result)
-  ↓
-SUMMARY RESULT
-  ↓
-save_to_file(summary)
-  ↓
-warehouse_report.txt
-```
+Главный файл приложения.
 
-Главная особенность:
+Он отвечает за:
 
 ```text
-OUTPUT TOOL #1
-      ↓
-INPUT TOOL #2
-
-OUTPUT TOOL #2
-      ↓
-INPUT TOOL #3
+User Request
+     ↓
+Gemini Router
+     ↓
+Route Selection
+     ↓
+MCP Orchestrator
+     ↓
+Tool Calls
 ```
 
-Инструменты не выполняются независимо друг от друга.
-
-Они образуют единый workflow.
+Также `main.py` устанавливает соединения сразу с тремя MCP-серверами.
 
 ---
 
-# Tool 1 — search
+## warehouse_server.py
 
-Первый MCP-инструмент:
+MCP-сервер для работы с товарами.
 
-```text
-search
-```
-
-Принимает:
+Инструменты:
 
 ```text
-query
+search_products
+get_product
 ```
+
+### search_products
+
+Ищет товары по:
+
+- названию;
+- ID;
+- складу.
 
 Например:
 
@@ -166,148 +125,452 @@ query
 Москва
 ```
 
-Инструмент обращается к:
+может вернуть несколько товаров московского склада.
 
-```text
-warehouse_api.py
-```
+### get_product
 
-и ищет товары по:
-
-- ID;
-- названию;
-- складу.
-
----
-
-# Mock API
-
-В учебном проекте используется локальный набор товаров.
+Получает конкретный товар по его ID.
 
 Например:
 
-```python
-PRODUCTS = {
-    101: {
-        "id": 101,
-        "name": "Ноутбук Lenovo ThinkBook",
-        "quantity": 7,
-        "price": 85000,
-        "warehouse": "Москва"
-    }
-}
-```
-
-В реальном приложении вместо Mock API здесь может находиться:
-
 ```text
-REST API
-Database
-CRM
-ERP
-Git
-Яндекс.Трекер
-```
-
-Pipeline при этом может остаться прежним.
-
----
-
-# Результат search
-
-Инструмент возвращает структурированные данные.
-
-Например:
-
-```json
-{
-  "success": true,
-  "query": "Москва",
-  "count": 3,
-  "products": [
-    {
-      "id": 101,
-      "name": "Ноутбук Lenovo ThinkBook",
-      "quantity": 7,
-      "price": 85000,
-      "warehouse": "Москва"
-    }
-  ]
-}
-```
-
-Этот результат не просто выводится пользователю.
-
-Он автоматически передаётся следующему MCP-инструменту.
-
----
-
-# Tool 2 — summarize
-
-Второй инструмент:
-
-```text
-summarize
-```
-
-получает:
-
-```text
-search_result
-```
-
-То есть результат первого инструмента становится входом второго:
-
-```text
-search()
-   ↓
-search_result
-   ↓
-summarize(search_result)
-```
-
-В коде это выглядит как передача:
-
-```python
-{
-    "search_result": search_result
-}
+101
 ```
 
 ---
 
-# Агрегация
+## analytics_server.py
 
-`summarize` рассчитывает:
+Отдельный MCP-сервер для анализа данных.
+
+Инструмент:
 
 ```text
-Количество найденных товаров
+analyze_products
+```
+
+Он получает список товаров и рассчитывает:
+
+```text
+Количество товаров
 Общий остаток
 Стоимость остатков
 Товары без остатка
 ```
 
-Общий остаток рассчитывается по всем найденным товарам.
-
-Стоимость остатков:
-
-```text
-quantity × price
-```
-
-для каждого товара с последующим суммированием.
+Также инструмент формирует текстовый аналитический отчёт.
 
 ---
 
-# Пример
+## report_server.py
 
-Для запроса:
+Отдельный MCP-сервер для сохранения результатов.
+
+Инструмент:
 
 ```text
-Москва
+save_report
 ```
 
-было найдено три товара:
+Он получает готовый текст отчёта и сохраняет его:
+
+```text
+reports/warehouse_report.txt
+```
+
+Для файла используется кодировка UTF-8.
+
+---
+
+# Несколько MCP-серверов
+
+Главное отличие этого проекта — инструменты находятся не на одном сервере.
+
+Используются три отдельных процесса:
+
+```text
+warehouse_server.py
+analytics_server.py
+report_server.py
+```
+
+В `main.py` для каждого создаётся отдельное MCP-соединение:
+
+```text
+Warehouse Client
+Analytics Client
+Report Client
+```
+
+В результате один пользовательский запрос может привести к вызовам инструментов на нескольких серверах.
+
+---
+
+# Agent Router
+
+Для маршрутизации используется Gemini.
+
+Пользователь может писать запрос обычным текстом:
+
+```text
+Найди товары в Москве
+```
+
+или:
+
+```text
+Проанализируй товары Logitech
+```
+
+или:
+
+```text
+Найди товары в Москве,
+проанализируй остатки
+и сохрани отчёт
+```
+
+Router анализирует запрос и возвращает структурированное решение.
+
+Пример:
+
+```json
+{
+  "route": "full_report",
+  "query": "Москва"
+}
+```
+
+---
+
+# Доступные маршруты
+
+В проекте реализованы три маршрута.
+
+## search
+
+Для обычного поиска:
+
+```text
+USER
+ ↓
+Gemini Router
+ ↓
+Warehouse MCP
+ ↓
+search_products
+```
+
+---
+
+## analyze
+
+Для поиска и анализа:
+
+```text
+USER
+ ↓
+Gemini Router
+ ↓
+Warehouse MCP
+ ↓
+search_products
+ ↓
+products
+ ↓
+Analytics MCP
+ ↓
+analyze_products
+```
+
+---
+
+## full_report
+
+Полный длинный flow:
+
+```text
+USER
+ ↓
+Gemini Router
+ ↓
+Warehouse MCP
+ ↓
+search_products
+ ↓
+products
+ ↓
+Analytics MCP
+ ↓
+analyze_products
+ ↓
+report
+ ↓
+Report MCP
+ ↓
+save_report
+ ↓
+warehouse_report.txt
+```
+
+Это основной сценарий Дня 20.
+
+---
+
+# Передача данных между MCP-серверами
+
+Серверы не работают изолированно.
+
+Результат одного MCP Tool используется как вход другого.
+
+После поиска:
+
+```text
+Warehouse MCP
+
+search_products
+      ↓
+products
+```
+
+список товаров передаётся:
+
+```text
+products
+   ↓
+Analytics MCP
+   ↓
+analyze_products
+```
+
+После анализа:
+
+```text
+analyze_products
+       ↓
+report
+```
+
+готовый отчёт передаётся:
+
+```text
+report
+  ↓
+Report MCP
+  ↓
+save_report
+```
+
+Таким образом данные проходят через несколько независимых MCP-серверов.
+
+---
+
+# Orchestrator
+
+Функция:
+
+```text
+orchestrate()
+```
+
+управляет выполнением выбранного маршрута.
+
+Router принимает решение:
+
+```text
+search
+```
+
+или:
+
+```text
+analyze
+```
+
+или:
+
+```text
+full_report
+```
+
+После этого orchestrator выполняет соответствующую последовательность MCP Tool Calls.
+
+---
+
+# Почему маршрутизация разделена на два уровня
+
+В проекте Gemini отвечает за решение:
+
+```text
+Что хочет пользователь?
+```
+
+Например:
+
+```text
+full_report
+```
+
+Python отвечает за контролируемое выполнение:
+
+```text
+Какие именно инструменты
+и в каком порядке вызвать?
+```
+
+Получается:
+
+```text
+LLM
+ ↓
+Route Decision
+ ↓
+Python Orchestrator
+ ↓
+Allowed MCP Tools
+```
+
+Такой подход позволяет совместить гибкость LLM с предсказуемым выполнением программы.
+
+---
+
+# Сценарий №1 — Search
+
+Запуск:
+
+```powershell
+py main.py
+```
+
+Запрос:
+
+```text
+Найди товары в Москве
+```
+
+Ожидаемый маршрут:
+
+```text
+Route: search
+Query: Москва
+```
+
+Выполняется:
+
+```text
+Warehouse MCP
+      ↓
+search_products
+```
+
+Analytics и Report для этого запроса не требуются.
+
+---
+
+# Сценарий №2 — Analyze
+
+Запуск:
+
+```powershell
+py main.py
+```
+
+Запрос:
+
+```text
+Проанализируй товары Logitech
+```
+
+Router выбирает:
+
+```text
+analyze
+```
+
+Выполняется:
+
+```text
+Warehouse MCP
+      ↓
+search_products
+      ↓
+Analytics MCP
+      ↓
+analyze_products
+```
+
+Report MCP не вызывается.
+
+---
+
+# Сценарий №3 — Full Report
+
+Главный тест проекта:
+
+```powershell
+py main.py
+```
+
+Запрос:
+
+```text
+Найди товары в Москве, проанализируй остатки и сохрани отчёт
+```
+
+Router должен определить:
+
+```text
+Route: full_report
+Query: Москва
+```
+
+После этого автоматически выполняется длинный flow:
+
+```text
+Warehouse MCP
+      ↓
+search_products
+      ↓
+products
+      ↓
+Analytics MCP
+      ↓
+analyze_products
+      ↓
+report
+      ↓
+Report MCP
+      ↓
+save_report
+```
+
+---
+
+# Результат полного flow
+
+После выполнения создаётся:
+
+```text
+reports/warehouse_report.txt
+```
+
+Проверить его в PowerShell:
+
+```powershell
+Get-Content .\reports\warehouse_report.txt -Encoding UTF8
+```
+
+Или открыть в Блокноте:
+
+```powershell
+notepad .\reports\warehouse_report.txt
+```
+
+---
+
+# Пример аналитики
+
+Для московского склада используются товары:
 
 ```text
 Ноутбук Lenovo ThinkBook
@@ -315,7 +578,7 @@ quantity × price
 Мышь Logitech
 ```
 
-Остатки:
+Остаток:
 
 ```text
 7 + 0 + 15 = 22
@@ -325,9 +588,7 @@ quantity × price
 
 ```text
 7 × 85000 = 595000
-
 0 × 32000 = 0
-
 15 × 3500 = 52500
 ```
 
@@ -337,534 +598,168 @@ quantity × price
 647500 руб.
 ```
 
----
-
-# Сформированная сводка
-
-Результат обработки имеет вид:
+Также определяется товар без остатка:
 
 ```text
-Сводка по запросу: Москва
-
-Найдено товаров: 3
-Общий остаток: 22
-Стоимость остатков: 647500 руб.
-
-Товары:
-- Ноутбук Lenovo ThinkBook: 7 шт., 85000 руб., склад: Москва
-- Монитор Samsung 27: 0 шт., 32000 руб., склад: Москва
-- Мышь Logitech: 15 шт., 3500 руб., склад: Москва
-
-Нет в наличии:
-- Монитор Samsung 27
-```
-
-После этого текст автоматически передаётся третьему инструменту.
-
----
-
-# Tool 3 — save_to_file
-
-Последний MCP-инструмент:
-
-```text
-save_to_file
-```
-
-принимает:
-
-```text
-content
-filename
-```
-
-В качестве `content` используется результат `summarize`.
-
-Получается:
-
-```text
-summary_result
-      ↓
-summary
-      ↓
-save_to_file
-```
-
-В pipeline передаётся:
-
-```python
-{
-    "content": summary_text,
-    "filename": "warehouse_report.txt"
-}
+Монитор Samsung 27
 ```
 
 ---
 
-# Сохранение файла
+# Контроль порядка вызовов
 
-Инструмент автоматически создаёт каталог:
-
-```text
-reports
-```
-
-если его ещё нет.
-
-После этого результат сохраняется:
-
-```text
-reports/warehouse_report.txt
-```
-
-Для записи используется UTF-8:
-
-```python
-with open(
-    file_path,
-    "w",
-    encoding="utf-8"
-) as file:
-    file.write(content)
-```
-
----
-
-# Безопасность пути
-
-Имя файла обрабатывается через:
-
-```python
-os.path.basename(filename)
-```
-
-Это не позволяет переданному имени файла напрямую выйти за пределы каталога `reports` с помощью пути вида:
-
-```text
-../../file.txt
-```
-
-Для production-системы потребовались бы дополнительные проверки, но для учебного примера это добавляет базовое ограничение пути.
-
----
-
-# Автоматическое выполнение
-
-Pipeline реализован в:
-
-```text
-run_pipeline()
-```
-
-После ввода поискового запроса пользователю больше не требуется вручную запускать каждый инструмент.
-
-Выполнение происходит автоматически:
-
-```text
-USER INPUT
-    ↓
-[1/3] SEARCH
-    ↓
-[2/3] SUMMARIZE
-    ↓
-[3/3] SAVE TO FILE
-    ↓
-PIPELINE COMPLETED
-```
-
----
-
-# Передача данных
-
-Это основная часть задания.
-
-После `search`:
-
-```python
-search_result = get_result(
-    search_response
-)
-```
-
-полученный результат передаётся:
-
-```python
-await client.call_tool(
-    "summarize",
-    {
-        "search_result": search_result
-    }
-)
-```
-
-Затем из результата `summarize` берётся:
-
-```python
-summary_text = summary_result.get(
-    "summary",
-    ""
-)
-```
-
-и передаётся:
-
-```python
-await client.call_tool(
-    "save_to_file",
-    {
-        "content": summary_text,
-        "filename": "warehouse_report.txt"
-    }
-)
-```
-
-Таким образом:
-
-```text
-search_result
-      ↓
-summarize
-
-summary_result["summary"]
-      ↓
-save_to_file
-```
-
----
-
-# Обработка ошибок
-
-После каждого MCP-вызова проверяется результат.
-
-Если инструмент сообщает об ошибке:
-
-```text
-result.is_error
-```
-
-pipeline останавливается на соответствующем этапе.
+Для проверки orchestration программа выводит текущий сервер и инструмент.
 
 Например:
 
 ```text
-search
- ↓
-ERROR
- ↓
-STOP
+SERVER: WAREHOUSE
+TOOL: search_products
 ```
 
-В этом случае `summarize` и `save_to_file` не выполняются с некорректными входными данными.
+затем:
+
+```text
+SERVER: ANALYTICS
+TOOL: analyze_products
+```
+
+затем:
+
+```text
+SERVER: REPORT
+TOOL: save_report
+```
+
+В конце:
+
+```text
+FLOW COMPLETED
+
+Маршрут:
+Warehouse → Analytics → Report
+```
+
+Таким образом в консоли можно увидеть не только итоговый результат, но и фактический порядок выполнения flow.
 
 ---
 
-# Тест №1 — поиск по складу
+# Отличие Дня 19 от Дня 20
 
-Запуск:
+## День 19 — Tool Composition
 
-```powershell
-py main.py
-```
-
-Запрос:
+Несколько инструментов находились на одном MCP-сервере:
 
 ```text
-Москва
-```
-
-Pipeline автоматически выполняет:
-
-```text
-search("Москва")
-       ↓
-3 товара
-       ↓
-summarize(...)
-       ↓
-сводка
-       ↓
-save_to_file(...)
-       ↓
-reports/warehouse_report.txt
-```
-
----
-
-# Проверка результата
-
-В PowerShell:
-
-```powershell
-Get-Content .\reports\warehouse_report.txt -Encoding UTF8
-```
-
-Также файл можно открыть через:
-
-```powershell
-notepad .\reports\warehouse_report.txt
-```
-
----
-
-# Тест №2 — поиск по названию
-
-Запуск:
-
-```powershell
-py main.py
-```
-
-Запрос:
-
-```text
-Logitech
-```
-
-Pipeline снова автоматически проходит все три этапа:
-
-```text
-search
- ↓
-summarize
- ↓
-save_to_file
-```
-
-Но теперь сводка строится только по товарам, соответствующим запросу `Logitech`.
-
----
-
-# Тест №3 — пустой результат
-
-Запрос:
-
-```text
-iPhone
-```
-
-Если товары не найдены, `search` возвращает:
-
-```json
-{
-  "success": true,
-  "query": "iPhone",
-  "count": 0,
-  "products": []
-}
-```
-
-Pipeline при этом не падает.
-
-`summarize` создаёт сообщение:
-
-```text
-По запросу «iPhone» товары не найдены.
-```
-
-После чего `save_to_file` сохраняет этот результат.
-
-Это показывает, что инструменты корректно обрабатывают и передают пустой результат.
-
----
-
-# MCP и Orchestration
-
-Важно разделять две части системы.
-
-MCP предоставляет инструменты:
-
-```text
-search
-summarize
-save_to_file
-```
-
-А порядок их выполнения определяет:
-
-```text
-main.py
-```
-
-То есть:
-
-```text
-MCP
-→ предоставляет Tools
-
-main.py
-→ строит Workflow
-```
-
-В текущей реализации orchestration является детерминированным:
-
-```text
-search
- ↓
-summarize
- ↓
-save_to_file
-```
-
-Это делает pipeline предсказуемым и удобным для тестирования.
-
----
-
-# Отличие от Дня 18
-
-На Дне 18 основной задачей были:
-
-```text
-Scheduler
-Background Worker
-Periodic Execution
-JSON Persistence
-```
-
-Поэтому использовались:
-
-```text
-worker.py
-storage.py
-```
-
-На Дне 19 задача другая:
-
-```text
-Tool Composition
-Pipeline
-Data Transfer
-```
-
-Поэтому `worker.py` и `storage.py` в текущей реализации не используются.
-
-Архитектура Дня 19:
-
-```text
-main.py
-      ↓
 MCP Server
-      ↓
+├── search
+├── summarize
+└── save_to_file
+```
+
+Pipeline:
+
+```text
 search
-      ↓
-warehouse_api.py
-      ↓
+ ↓
 summarize
-      ↓
+ ↓
 save_to_file
-      ↓
-warehouse_report.txt
+```
+
+Основная задача:
+
+```text
+Соединить несколько MCP Tools
+в один pipeline.
 ```
 
 ---
 
-# День 18 vs День 19
+## День 20 — MCP Orchestration
 
-## День 18
+Теперь инструменты распределены между несколькими MCP-серверами:
 
 ```text
-CREATE TASK
-    ↓
-SCHEDULE
-    ↓
-WORKER
-    ↓
-PERIODIC EXECUTION
+Warehouse MCP
+      ↓
+Analytics MCP
+      ↓
+Report MCP
 ```
 
-Основная идея:
+Дополнительно появился:
 
 ```text
-Когда выполнить работу?
+Gemini Router
 ```
 
-## День 19
+Он определяет маршрут на основе запроса пользователя.
+
+Основная задача:
 
 ```text
-SEARCH
-    ↓
-SUMMARIZE
-    ↓
-SAVE
-```
-
-Основная идея:
-
-```text
-Как связать несколько инструментов
-в единый workflow?
+Выбрать нужные инструменты
+      +
+маршрутизировать запрос
+      +
+выполнить flow
+между несколькими MCP-серверами
 ```
 
 ---
 
 # Результат
 
-В результате реализован автоматический pipeline из трёх MCP-инструментов:
+Реализована система orchestration с несколькими MCP-серверами.
+
+Система умеет:
+
+- подключаться к трём MCP-серверам;
+- принимать запрос на естественном языке;
+- использовать Gemini для определения маршрута;
+- выбирать короткий или длинный сценарий;
+- выполнять инструменты с разных MCP-серверов;
+- передавать данные между серверами;
+- сохранять итоговый отчёт;
+- показывать порядок выполнения инструментов.
+
+Полный flow:
+
+```text
+USER
+ ↓
+GEMINI ROUTER
+ ↓
+WAREHOUSE MCP
+ ↓
+search_products
+ ↓
+ANALYTICS MCP
+ ↓
+analyze_products
+ ↓
+REPORT MCP
+ ↓
+save_report
+ ↓
+FILE
+```
+
+## Итог
+
+На Дне 20 отдельные MCP-инструменты объединены в многошаговую систему.
+
+Теперь агент не просто вызывает заранее заданную цепочку.
+
+Сначала он определяет намерение пользователя:
 
 ```text
 search
- ↓
-summarize
- ↓
-save_to_file
+analyze
+full_report
 ```
 
-Реализованы:
+После этого orchestrator выполняет необходимую последовательность инструментов на разных MCP-серверах.
 
-- несколько независимых MCP Tools;
-- поиск данных;
-- обработка данных;
-- агрегация результатов;
-- создание текстовой сводки;
-- сохранение результата в файл;
-- автоматическая последовательность вызовов;
-- передача результата между инструментами;
-- обработка пустого результата;
-- остановка pipeline при ошибке;
-- UTF-8 для сохранённого отчёта.
-
-Главный результат:
-
-```text
-TOOL #1
-   │
-   │ result
-   ↓
-TOOL #2
-   │
-   │ result
-   ↓
-TOOL #3
-   │
-   ↓
-FINAL RESULT
-```
-
----
-
-# Вывод
-
-День 19 показывает, что MCP-инструменты можно использовать не только независимо друг от друга.
-
-Из небольших специализированных Tools можно строить более сложные процессы:
-
-```text
-GET DATA
-    ↓
-PROCESS DATA
-    ↓
-SAVE RESULT
-```
-
-В нашем примере:
-
-```text
-search
-    ↓
-summarize
-    ↓
-save_to_file
-```
-
-Pipeline запускается одной командой, а передача данных и выполнение последующих этапов происходят автоматически.
-
-Это является основой для построения более сложных AI workflows и агентных систем из небольших MCP-инструментов.
+Это позволяет строить более сложные агентные системы, где разные MCP-серверы отвечают за разные области работы.
