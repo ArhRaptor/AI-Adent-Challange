@@ -1,0 +1,47 @@
+AI AGENT DESIGN NOTES
+
+An AI agent is more than a single model call. A practical agent combines model reasoning with state,
+tools, constraints, and an execution loop. The model may propose an action, but the application decides
+which actions are permitted and how results are represented.
+
+SHORT-TERM MEMORY
+Short-term memory contains the recent dialogue. It is useful for references such as “that function”
+or “the previous error”. Keeping unlimited dialogue eventually consumes context, so applications often
+use a sliding window or another context-management strategy.
+
+WORKING MEMORY
+Working memory stores facts needed for the current task. Examples include the selected architecture,
+the current file being edited, and the next expected action. Working memory should be explicit enough
+that an agent can resume a task without reconstructing everything from conversation text.
+
+LONG-TERM MEMORY
+Long-term memory stores durable information that is useful across tasks. It should not become an
+uncontrolled dump of every conversation. Stable preferences and important project decisions are more
+useful than temporary details.
+
+STATE MACHINES
+A state machine can constrain an agent workflow. A task may move from planning to execution,
+then validation, then done. Allowed transitions prevent the model from skipping required gates.
+Pause and resume can preserve task state independently from the chat history.
+
+INVARIANTS
+An invariant is a rule that must remain true during execution. Examples include an approved language,
+architecture, or security requirement. Invariants should be stored separately from conversational text
+and checked before important state changes.
+
+TOOLS
+Tools connect an agent to deterministic capabilities. Search, database access, file writing, calculators,
+and APIs are examples. Tool schemas should be narrow, descriptive, and easy to validate.
+
+ORCHESTRATION
+An orchestrator coordinates several tools or services. Some flows are deterministic and some use an
+LLM to choose among allowed routes. A useful design keeps side effects controlled by application code.
+
+VALIDATION
+A model-generated answer is not automatically a validated result. Validation can include schema checks,
+business rules, tests, or another deterministic verification step. Critical operations should fail safely.
+
+OBSERVABILITY
+Agents are easier to debug when each step records what was attempted, which tool was called, whether it
+succeeded, and how long it took. Logs should avoid exposing secrets while preserving enough context
+for troubleshooting.

@@ -1,61 +1,103 @@
-# День 20 — Orchestration MCP
+# День 21 — Индексация документов
 
 ## Цель
 
-Реализовать оркестрацию нескольких MCP-серверов и инструментов.
+Создать локальный pipeline индексации документов для дальнейшего использования в semantic search и RAG.
 
-Система должна:
+Pipeline выполняет:
 
-- подключаться к нескольким MCP-серверам;
-- принимать запрос пользователя на естественном языке;
-- определять необходимый маршрут;
-- выбирать нужные инструменты;
-- вызывать инструменты с разных MCP-серверов;
-- передавать результаты между инструментами;
-- выполнять длинный многошаговый flow.
+```text
+Documents
+    ↓
+Loading
+    ↓
+Chunking
+    ↓
+Embeddings
+    ↓
+Metadata
+    ↓
+Local Index
+```
+
+Дополнительно реализованы и сравниваются две стратегии разбиения документов:
+
+```text
+Fixed-size Chunking
+        VS
+Structure-aware Chunking
+```
 
 ---
 
-# Архитектура
+# Корпус документов
 
-В проекте используются три независимых MCP-сервера:
-
-```text
-Warehouse MCP Server
-├── search_products
-└── get_product
-
-Analytics MCP Server
-└── analyze_products
-
-Report MCP Server
-└── save_report
-```
-
-Над ними находится агент-маршрутизатор:
+Для эксперимента подготовлен локальный набор документов разных типов:
 
 ```text
-                    ┌─────────────────────┐
-                    │        USER         │
-                    └──────────┬──────────┘
-                               ↓
-                    ┌─────────────────────┐
-                    │    Gemini Router    │
-                    └──────────┬──────────┘
-                               ↓
-                     выбор маршрута
-                               ↓
-             ┌─────────────────┼─────────────────┐
-             ↓                 ↓                 ↓
-         search             analyze         full_report
-             │                 │                 │
-             ↓                 ↓                 ↓
-        Warehouse         Warehouse          Warehouse
-                               ↓                 ↓
-                          Analytics          Analytics
-                                                 ↓
-                                              Report
+documents/
+├── README.md
+├── rag_notes.md
+├── mcp_notes.md
+├── android_architecture.md
+├── agent_design.txt
+├── chunking_comparison.md
+├── python_services.md
+├── software_architecture.md
+├── indexer_example.py
+├── compose_example.kt
+└── index_config_examples.json
 ```
+
+Корпус содержит:
+
+- Markdown;
+- обычный текст;
+- Python-код;
+- Kotlin-код;
+- JSON.
+
+Общий объём подготовленного корпуса составляет около:
+
+```text
+79 700 символов
+```
+
+При условной оценке:
+
+```text
+~1800 символов = 1 страница
+```
+
+получается около:
+
+```text
+44 страниц текста
+```
+
+Это превышает минимальное требование задания в 20–30 страниц или эквивалентный объём кода.
+
+---
+
+# Тематика документов
+
+Корпус содержит материалы по нескольким темам:
+
+```text
+RAG
+MCP
+AI Agents
+Chunking
+Embeddings
+Software Architecture
+Python Services
+Android
+Kotlin
+Jetpack Compose
+Document Indexing
+```
+
+Разные типы документов позволяют проверить работу chunking не только на обычном тексте, но и на структурированных Markdown-файлах и исходном коде.
 
 ---
 
@@ -64,702 +106,897 @@ Report MCP Server
 ```text
 .
 ├── main.py
-├── warehouse_server.py
-├── analytics_server.py
-├── report_server.py
-├── README.md
-└── reports/
-    └── warehouse_report.txt
+│
+├── documents/
+│   ├── README.md
+│   ├── rag_notes.md
+│   ├── mcp_notes.md
+│   ├── android_architecture.md
+│   ├── agent_design.txt
+│   ├── chunking_comparison.md
+│   ├── python_services.md
+│   ├── software_architecture.md
+│   ├── indexer_example.py
+│   ├── compose_example.kt
+│   └── index_config_examples.json
+│
+├── indexes/
+│   ├── index_fixed.json
+│   └── index_structured.json
+│
+└── README.md
 ```
-
-`reports/` содержит генерируемые программой файлы и может быть добавлен в `.gitignore`.
 
 ---
 
-# Компоненты
+# Pipeline индексации
 
-## main.py
-
-Главный файл приложения.
-
-Он отвечает за:
+Полный процесс:
 
 ```text
-User Request
-     ↓
-Gemini Router
-     ↓
-Route Selection
-     ↓
-MCP Orchestrator
-     ↓
-Tool Calls
+documents/
+    ↓
+load_documents()
+    ↓
+┌───────────────────────┐
+│                       │
+↓                       ↓
+Fixed Chunking     Structured Chunking
+│                       │
+↓                       ↓
+Chunks                  Chunks
+│                       │
+↓                       ↓
+Embeddings             Embeddings
+│                       │
+↓                       ↓
+Metadata               Metadata
+│                       │
+↓                       ↓
+index_fixed.json   index_structured.json
 ```
 
-Также `main.py` устанавливает соединения сразу с тремя MCP-серверами.
+Обе стратегии используют один и тот же набор документов и одну модель embeddings.
+
+Это позволяет сравнивать именно способ chunking.
 
 ---
 
-## warehouse_server.py
+# Загрузка документов
 
-MCP-сервер для работы с товарами.
+Функция:
 
-Инструменты:
-
-```text
-search_products
-get_product
+```python
+load_documents()
 ```
 
-### search_products
+рекурсивно читает каталог:
 
-Ищет товары по:
+```text
+documents/
+```
 
-- названию;
-- ID;
-- складу.
+Поддерживаются расширения:
+
+```text
+.txt
+.md
+.py
+.kt
+.java
+.json
+```
+
+Файлы читаются в UTF-8.
+
+Пустые документы пропускаются.
+
+Для каждого документа сохраняются:
+
+```text
+source
+title
+text
+```
 
 Например:
-
-```text
-Москва
-```
-
-может вернуть несколько товаров московского склада.
-
-### get_product
-
-Получает конкретный товар по его ID.
-
-Например:
-
-```text
-101
-```
-
----
-
-## analytics_server.py
-
-Отдельный MCP-сервер для анализа данных.
-
-Инструмент:
-
-```text
-analyze_products
-```
-
-Он получает список товаров и рассчитывает:
-
-```text
-Количество товаров
-Общий остаток
-Стоимость остатков
-Товары без остатка
-```
-
-Также инструмент формирует текстовый аналитический отчёт.
-
----
-
-## report_server.py
-
-Отдельный MCP-сервер для сохранения результатов.
-
-Инструмент:
-
-```text
-save_report
-```
-
-Он получает готовый текст отчёта и сохраняет его:
-
-```text
-reports/warehouse_report.txt
-```
-
-Для файла используется кодировка UTF-8.
-
----
-
-# Несколько MCP-серверов
-
-Главное отличие этого проекта — инструменты находятся не на одном сервере.
-
-Используются три отдельных процесса:
-
-```text
-warehouse_server.py
-analytics_server.py
-report_server.py
-```
-
-В `main.py` для каждого создаётся отдельное MCP-соединение:
-
-```text
-Warehouse Client
-Analytics Client
-Report Client
-```
-
-В результате один пользовательский запрос может привести к вызовам инструментов на нескольких серверах.
-
----
-
-# Agent Router
-
-Для маршрутизации используется Gemini.
-
-Пользователь может писать запрос обычным текстом:
-
-```text
-Найди товары в Москве
-```
-
-или:
-
-```text
-Проанализируй товары Logitech
-```
-
-или:
-
-```text
-Найди товары в Москве,
-проанализируй остатки
-и сохрани отчёт
-```
-
-Router анализирует запрос и возвращает структурированное решение.
-
-Пример:
 
 ```json
 {
-  "route": "full_report",
-  "query": "Москва"
+  "source": "documents/rag_notes.md",
+  "title": "rag_notes.md",
+  "text": "..."
 }
 ```
 
 ---
 
-# Доступные маршруты
+# Strategy 1 — Fixed-size Chunking
 
-В проекте реализованы три маршрута.
+Первая стратегия делит документ по фиксированному размеру.
 
-## search
+Настройки:
 
-Для обычного поиска:
+```python
+FIXED_CHUNK_SIZE = 1200
+FIXED_CHUNK_OVERLAP = 200
+```
+
+То есть один chunk содержит максимум примерно:
 
 ```text
-USER
- ↓
-Gemini Router
- ↓
-Warehouse MCP
- ↓
-search_products
+1200 символов
+```
+
+а соседние chunks имеют overlap:
+
+```text
+200 символов
 ```
 
 ---
 
-## analyze
+# Зачем нужен overlap
 
-Для поиска и анализа:
+Без overlap:
 
 ```text
-USER
- ↓
-Gemini Router
- ↓
-Warehouse MCP
- ↓
-search_products
- ↓
-products
- ↓
-Analytics MCP
- ↓
-analyze_products
+Chunk 1
+[----------------]
+
+Chunk 2
+                  [----------------]
 ```
+
+Информация на границе может потерять контекст.
+
+С overlap:
+
+```text
+Chunk 1
+[----------------]
+
+             [----------------]
+             Chunk 2
+```
+
+часть предыдущего chunk повторяется в следующем.
+
+Это уменьшает вероятность потери смысловой связи на границе.
 
 ---
 
-## full_report
+# Преимущества Fixed Chunking
 
-Полный длинный flow:
+Fixed-size chunking:
 
-```text
-USER
- ↓
-Gemini Router
- ↓
-Warehouse MCP
- ↓
-search_products
- ↓
-products
- ↓
-Analytics MCP
- ↓
-analyze_products
- ↓
-report
- ↓
-Report MCP
- ↓
-save_report
- ↓
-warehouse_report.txt
-```
-
-Это основной сценарий Дня 20.
+- очень простой;
+- работает почти с любым текстом;
+- создаёт chunks похожего размера;
+- легко настраивается;
+- не требует понимания формата документа.
 
 ---
 
-# Передача данных между MCP-серверами
+# Недостатки Fixed Chunking
 
-Серверы не работают изолированно.
+Алгоритм ничего не знает о структуре документа.
 
-Результат одного MCP Tool используется как вход другого.
+Например:
 
-После поиска:
+```markdown
+# Authentication
 
-```text
-Warehouse MCP
+Для авторизации приложение использует
+JWT token, который...
 
-search_products
-      ↓
-products
+---------- CHUNK BOUNDARY ----------
+
+...передаётся серверу в HTTP header.
 ```
 
-список товаров передаётся:
+Граница может пройти:
 
-```text
-products
-   ↓
-Analytics MCP
-   ↓
-analyze_products
-```
-
-После анализа:
-
-```text
-analyze_products
-       ↓
-report
-```
-
-готовый отчёт передаётся:
-
-```text
-report
-  ↓
-Report MCP
-  ↓
-save_report
-```
-
-Таким образом данные проходят через несколько независимых MCP-серверов.
+- внутри предложения;
+- внутри раздела;
+- внутри функции;
+- между заголовком и его содержимым.
 
 ---
 
-# Orchestrator
+# Metadata Fixed Chunk
 
-Функция:
+Пример:
 
-```text
-orchestrate()
+```json
+{
+  "source": "documents/rag_notes.md",
+  "title": "rag_notes.md",
+  "section": null,
+  "chunk_id": "rag_notes.md::fixed::0003",
+  "strategy": "fixed",
+  "start_char": 3000,
+  "end_char": 4200
+}
 ```
 
-управляет выполнением выбранного маршрута.
+Здесь `section` может быть `null`, потому что fixed chunking не анализирует логическую структуру документа.
 
-Router принимает решение:
+---
+
+# Strategy 2 — Structured Chunking
+
+Вторая стратегия учитывает структуру документа.
+
+Функции:
+
+```python
+detect_sections()
+structured_chunking()
+```
+
+Сначала документ разбивается на логические разделы.
+
+После этого большие разделы дополнительно ограничиваются по размеру.
+
+---
+
+# Markdown Chunking
+
+Для Markdown используются заголовки:
+
+```markdown
+# RAG
+
+## Chunking
+
+## Embeddings
+
+## Retrieval
+
+## Evaluation
+```
+
+Каждый раздел становится отдельной логической единицей.
+
+Например:
 
 ```text
-search
+section = Chunking
 ```
 
 или:
 
 ```text
-analyze
+section = Embeddings
+```
+
+---
+
+# Python Chunking
+
+Для Python определяются конструкции:
+
+```python
+class Agent:
+    ...
+```
+
+```python
+def search():
+    ...
+```
+
+```python
+async def execute():
+    ...
+```
+
+Таким образом chunk может соответствовать конкретной функции или классу.
+
+Например:
+
+```json
+{
+  "source": "documents/indexer_example.py",
+  "title": "indexer_example.py",
+  "section": "fixed_chunks",
+  "chunk_id": "indexer_example.py::structured::0003",
+  "strategy": "structured"
+}
+```
+
+---
+
+# Остальные форматы
+
+Если для документа нет специального структурного parser-а, весь файл сначала рассматривается как один section:
+
+```text
+section = filename
+```
+
+Если section слишком большой, он дополнительно разбивается на ограниченные chunks.
+
+---
+
+# Ограничение размера Structured Chunk
+
+Structured chunking не означает:
+
+```text
+1 section = chunk любого размера
+```
+
+Если один раздел содержит очень много текста:
+
+```text
+SECTION
+   ↓
+слишком большой
+   ↓
+разделить внутри section
+```
+
+При этом metadata исходного section сохраняются.
+
+Это позволяет совместить:
+
+```text
+логическую структуру
++
+ограниченный размер chunk
+```
+
+---
+
+# Metadata
+
+Каждый chunk содержит metadata.
+
+Основные поля:
+
+```text
+source
+title
+section
+chunk_id
+strategy
+```
+
+---
+
+# source
+
+Путь к исходному документу.
+
+Например:
+
+```text
+documents/mcp_notes.md
+```
+
+---
+
+# title
+
+Имя исходного файла.
+
+Например:
+
+```text
+mcp_notes.md
+```
+
+---
+
+# section
+
+Логический раздел.
+
+Например:
+
+```text
+Tool Composition
 ```
 
 или:
 
 ```text
-full_report
+Agent Routing
 ```
 
-После этого orchestrator выполняет соответствующую последовательность MCP Tool Calls.
-
----
-
-# Почему маршрутизация разделена на два уровня
-
-В проекте Gemini отвечает за решение:
+Для fixed chunking значение может быть:
 
 ```text
-Что хочет пользователь?
-```
-
-Например:
-
-```text
-full_report
-```
-
-Python отвечает за контролируемое выполнение:
-
-```text
-Какие именно инструменты
-и в каком порядке вызвать?
-```
-
-Получается:
-
-```text
-LLM
- ↓
-Route Decision
- ↓
-Python Orchestrator
- ↓
-Allowed MCP Tools
-```
-
-Такой подход позволяет совместить гибкость LLM с предсказуемым выполнением программы.
-
----
-
-# Сценарий №1 — Search
-
-Запуск:
-
-```powershell
-py main.py
-```
-
-Запрос:
-
-```text
-Найди товары в Москве
-```
-
-Ожидаемый маршрут:
-
-```text
-Route: search
-Query: Москва
-```
-
-Выполняется:
-
-```text
-Warehouse MCP
-      ↓
-search_products
-```
-
-Analytics и Report для этого запроса не требуются.
-
----
-
-# Сценарий №2 — Analyze
-
-Запуск:
-
-```powershell
-py main.py
-```
-
-Запрос:
-
-```text
-Проанализируй товары Logitech
-```
-
-Router выбирает:
-
-```text
-analyze
-```
-
-Выполняется:
-
-```text
-Warehouse MCP
-      ↓
-search_products
-      ↓
-Analytics MCP
-      ↓
-analyze_products
-```
-
-Report MCP не вызывается.
-
----
-
-# Сценарий №3 — Full Report
-
-Главный тест проекта:
-
-```powershell
-py main.py
-```
-
-Запрос:
-
-```text
-Найди товары в Москве, проанализируй остатки и сохрани отчёт
-```
-
-Router должен определить:
-
-```text
-Route: full_report
-Query: Москва
-```
-
-После этого автоматически выполняется длинный flow:
-
-```text
-Warehouse MCP
-      ↓
-search_products
-      ↓
-products
-      ↓
-Analytics MCP
-      ↓
-analyze_products
-      ↓
-report
-      ↓
-Report MCP
-      ↓
-save_report
+null
 ```
 
 ---
 
-# Результат полного flow
+# chunk_id
 
-После выполнения создаётся:
+Каждый chunk получает уникальный идентификатор.
+
+Fixed:
 
 ```text
-reports/warehouse_report.txt
+mcp_notes.md::fixed::0004
 ```
 
-Проверить его в PowerShell:
+Structured:
 
-```powershell
-Get-Content .\reports\warehouse_report.txt -Encoding UTF8
+```text
+mcp_notes.md::structured::0004
 ```
 
-Или открыть в Блокноте:
+Это позволяет определить:
 
-```powershell
-notepad .\reports\warehouse_report.txt
+```text
+документ
++
+стратегию
++
+номер chunk
 ```
 
 ---
 
-# Пример аналитики
+# strategy
 
-Для московского склада используются товары:
+Metadata также явно хранит использованную стратегию:
 
 ```text
-Ноутбук Lenovo ThinkBook
-Монитор Samsung 27
-Мышь Logitech
+fixed
 ```
 
-Остаток:
+или:
 
 ```text
-7 + 0 + 15 = 22
-```
-
-Стоимость остатков:
-
-```text
-7 × 85000 = 595000
-0 × 32000 = 0
-15 × 3500 = 52500
-```
-
-Итого:
-
-```text
-647500 руб.
-```
-
-Также определяется товар без остатка:
-
-```text
-Монитор Samsung 27
+structured
 ```
 
 ---
 
-# Контроль порядка вызовов
+# Embeddings
 
-Для проверки orchestration программа выводит текущий сервер и инструмент.
-
-Например:
-
-```text
-SERVER: WAREHOUSE
-TOOL: search_products
-```
-
-затем:
-
-```text
-SERVER: ANALYTICS
-TOOL: analyze_products
-```
-
-затем:
-
-```text
-SERVER: REPORT
-TOOL: save_report
-```
-
-В конце:
-
-```text
-FLOW COMPLETED
-
-Маршрут:
-Warehouse → Analytics → Report
-```
-
-Таким образом в консоли можно увидеть не только итоговый результат, но и фактический порядок выполнения flow.
-
----
-
-# Отличие Дня 19 от Дня 20
-
-## День 19 — Tool Composition
-
-Несколько инструментов находились на одном MCP-сервере:
-
-```text
-MCP Server
-├── search
-├── summarize
-└── save_to_file
-```
+После chunking каждый текстовый chunk преобразуется в embedding.
 
 Pipeline:
 
 ```text
-search
- ↓
-summarize
- ↓
-save_to_file
+Chunk Text
+    ↓
+Embedding Model
+    ↓
+Vector
 ```
 
-Основная задача:
+Embedding представляет текст как числовой вектор.
 
-```text
-Соединить несколько MCP Tools
-в один pipeline.
+В проекте используется Gemini Embedding API.
+
+Модель задаётся через:
+
+```python
+EMBEDDING_MODEL
+```
+
+Для индекса используется размерность:
+
+```python
+EMBEDDING_DIMENSIONS = 768
 ```
 
 ---
 
-## День 20 — MCP Orchestration
+# Создание embedding
 
-Теперь инструменты распределены между несколькими MCP-серверами:
+Для каждого chunk вызывается:
 
-```text
-Warehouse MCP
-      ↓
-Analytics MCP
-      ↓
-Report MCP
+```python
+client.models.embed_content(...)
 ```
 
-Дополнительно появился:
+После чего полученный vector сохраняется вместе с:
 
 ```text
-Gemini Router
+text
+metadata
 ```
 
-Он определяет маршрут на основе запроса пользователя.
+---
 
-Основная задача:
+# Структура индексированного chunk
+
+Итоговая запись выглядит примерно так:
+
+```json
+{
+  "text": "Chunking determines the retrieval unit...",
+  "metadata": {
+    "source": "documents/chunking_comparison.md",
+    "title": "chunking_comparison.md",
+    "section": "Purpose",
+    "chunk_id": "chunking_comparison.md::structured::0000",
+    "strategy": "structured"
+  },
+  "embedding": [
+    0.012,
+    -0.034,
+    0.081
+  ]
+}
+```
+
+Реальный embedding содержит значительно больше чисел.
+
+---
+
+# Local Index
+
+В учебной реализации используется JSON.
+
+Создаются два отдельных индекса:
 
 ```text
-Выбрать нужные инструменты
-      +
-маршрутизировать запрос
-      +
-выполнить flow
-между несколькими MCP-серверами
+indexes/index_fixed.json
+indexes/index_structured.json
+```
+
+Первый содержит chunks:
+
+```text
+fixed
+```
+
+второй:
+
+```text
+structured
+```
+
+---
+
+# Структура Index
+
+Пример:
+
+```json
+{
+  "strategy": "structured",
+  "embedding_model": "...",
+  "embedding_dimensions": 768,
+  "chunks_count": 42,
+  "chunks": [
+    {
+      "text": "...",
+      "metadata": {
+        "source": "...",
+        "title": "...",
+        "section": "...",
+        "chunk_id": "...",
+        "strategy": "structured"
+      },
+      "embedding": [
+        0.1,
+        -0.2
+      ]
+    }
+  ]
+}
+```
+
+Таким образом индекс полностью локальный.
+
+---
+
+# Почему JSON
+
+В задании разрешены:
+
+```text
+FAISS
+SQLite
+JSON
+```
+
+Для учебного проекта выбран JSON.
+
+Преимущества:
+
+- не требуется отдельная база;
+- легко открыть;
+- легко проверить embeddings;
+- хорошо видны metadata;
+- удобно демонстрировать на видео;
+- помогает понять структуру vector index.
+
+Для большого production-проекта JSON не является оптимальным vector storage.
+
+В дальнейшем его можно заменить на:
+
+```text
+FAISS
+SQLite
+Vector Database
+```
+
+---
+
+# Сравнение стратегий
+
+После chunking программа выводит статистику:
+
+```text
+Документов
+Количество символов
+Примерный объём страниц
+
+Количество Fixed chunks
+Количество Structured chunks
+
+Средний размер Fixed chunk
+Средний размер Structured chunk
+```
+
+Это позволяет увидеть, как разные алгоритмы разбивают один и тот же корпус.
+
+---
+
+# Fixed vs Structured
+
+## Fixed
+
+```text
+Document
+ ↓
+1200 chars
+ ↓
+200 overlap
+ ↓
+next 1200 chars
+```
+
+Преимущество:
+
+```text
+простота
+```
+
+Недостаток:
+
+```text
+не учитывает смысловые границы
+```
+
+---
+
+## Structured
+
+```text
+Document
+ ↓
+Sections
+ ↓
+Headings / Functions / Classes
+ ↓
+Size Limit
+ ↓
+Chunks
+```
+
+Преимущество:
+
+```text
+лучше сохраняется структура документа
+```
+
+Недостаток:
+
+```text
+нужны правила для разных форматов
+```
+
+---
+
+# Главное отличие
+
+Fixed chunking отвечает на вопрос:
+
+```text
+Сколько символов поместить в chunk?
+```
+
+Structured chunking сначала отвечает:
+
+```text
+Где находится логическая граница?
+```
+
+а затем:
+
+```text
+Не слишком ли большой получился section?
+```
+
+---
+
+# Запуск
+
+Проверить документы:
+
+```powershell
+Get-ChildItem .\documents
+```
+
+Запустить индексатор:
+
+```powershell
+py main.py
+```
+
+---
+
+# Проверка индексов
+
+После завершения:
+
+```powershell
+Get-ChildItem .\indexes
+```
+
+Должны появиться:
+
+```text
+index_fixed.json
+index_structured.json
+```
+
+---
+
+# Просмотр Structured Index
+
+PowerShell:
+
+```powershell
+Get-Content .\indexes\index_structured.json -Encoding UTF8 -TotalCount 40
+```
+
+---
+
+# Просмотр Fixed Index
+
+```powershell
+Get-Content .\indexes\index_fixed.json -Encoding UTF8 -TotalCount 40
+```
+
+---
+
+# Что проверяется
+
+Проект демонстрирует полный ingestion pipeline:
+
+```text
+DOCUMENTS
+    ↓
+LOAD
+    ↓
+CHUNK
+    ↓
+EMBED
+    ↓
+METADATA
+    ↓
+INDEX
+```
+
+Также выполняется сравнительный эксперимент:
+
+```text
+              SAME DOCUMENTS
+                    ↓
+           ┌────────┴────────┐
+           ↓                 ↓
+        FIXED            STRUCTURED
+           ↓                 ↓
+        CHUNKS             CHUNKS
+           ↓                 ↓
+      EMBEDDINGS         EMBEDDINGS
+           ↓                 ↓
+      FIXED INDEX      STRUCTURED INDEX
 ```
 
 ---
 
 # Результат
 
-Реализована система orchestration с несколькими MCP-серверами.
+В результате реализованы:
 
-Система умеет:
+- корпус документов объёмом более 20–30 страниц;
+- загрузка нескольких форматов;
+- fixed-size chunking;
+- chunk overlap;
+- structure-aware chunking;
+- обработка Markdown sections;
+- обработка Python classes/functions;
+- metadata;
+- уникальные chunk IDs;
+- embeddings;
+- локальное хранение embeddings;
+- два независимых JSON-индекса;
+- статистика;
+- сравнение двух стратегий chunking.
 
-- подключаться к трём MCP-серверам;
-- принимать запрос на естественном языке;
-- использовать Gemini для определения маршрута;
-- выбирать короткий или длинный сценарий;
-- выполнять инструменты с разных MCP-серверов;
-- передавать данные между серверами;
-- сохранять итоговый отчёт;
-- показывать порядок выполнения инструментов.
-
-Полный flow:
-
-```text
-USER
- ↓
-GEMINI ROUTER
- ↓
-WAREHOUSE MCP
- ↓
-search_products
- ↓
-ANALYTICS MCP
- ↓
-analyze_products
- ↓
-REPORT MCP
- ↓
-save_report
- ↓
-FILE
-```
-
-## Итог
-
-На Дне 20 отдельные MCP-инструменты объединены в многошаговую систему.
-
-Теперь агент не просто вызывает заранее заданную цепочку.
-
-Сначала он определяет намерение пользователя:
+Финальный результат:
 
 ```text
-search
-analyze
-full_report
+documents/
+    ↓
+2 Chunking Strategies
+    ↓
+Embeddings
+    ↓
+Metadata
+    ↓
+Local Vector Indexes
 ```
 
-После этого orchestrator выполняет необходимую последовательность инструментов на разных MCP-серверах.
+---
 
-Это позволяет строить более сложные агентные системы, где разные MCP-серверы отвечают за разные области работы.
+# Что дальше
+
+Текущий этап решает задачу:
+
+```text
+INDEXING
+```
+
+Но пока не выполняет:
+
+```text
+SEMANTIC SEARCH
+```
+
+Следующим логическим этапом является retrieval:
+
+```text
+User Query
+    ↓
+Query Embedding
+    ↓
+Vector Similarity
+    ↓
+Top-K Chunks
+    ↓
+Relevant Context
+```
+
+Созданные на Дне 21 индексы уже содержат необходимые для этого embeddings и metadata.
+
+---
+
+# Итог
+
+День 21 создаёт основу локальной RAG-системы.
+
+Мы перешли от обычных документов:
+
+```text
+README
+Articles
+Code
+Text
+```
+
+к структурированному индексу:
+
+```text
+Chunk
++
+Embedding
++
+Metadata
+```
+
+и экспериментально подготовили две разные стратегии chunking для одного и того же корпуса документов.
