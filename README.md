@@ -1,15 +1,81 @@
-# День 21 — Индексация документов
+# День 22 — Первый RAG-запрос
 
 ## Цель
 
-Создать локальный pipeline индексации документов для дальнейшего использования в semantic search и RAG.
+Реализовать первый полноценный RAG pipeline поверх локального индекса документов, созданного на Дне 21.
 
-Pipeline выполняет:
+Система должна выполнять цепочку:
+
+```text
+Вопрос пользователя
+        ↓
+Embedding вопроса
+        ↓
+Поиск релевантных chunks
+        ↓
+Top-K chunks
+        ↓
+Контекст + вопрос
+        ↓
+LLM
+        ↓
+Ответ на основе локальных документов
+```
+
+Дополнительно реализовано сравнение двух режимов:
+
+```text
+WITHOUT RAG
+vs
+WITH RAG
+```
+
+и подготовлен набор из 10 контрольных вопросов для оценки качества retrieval и ответов.
+
+---
+
+# Что такое RAG
+
+RAG — Retrieval-Augmented Generation.
+
+Обычный LLM-запрос выглядит так:
+
+```text
+Question
+   ↓
+LLM
+   ↓
+Answer
+```
+
+Модель отвечает на основе собственных знаний.
+
+RAG добавляет перед LLM этап поиска информации:
+
+```text
+Question
+   ↓
+Retrieval
+   ↓
+Relevant Documents
+   ↓
+Question + Context
+   ↓
+LLM
+   ↓
+Answer
+```
+
+Таким образом модель получает дополнительный контекст из нашей локальной базы документов.
+
+---
+
+# Связь с Днём 21
+
+На Дне 21 был создан pipeline индексации:
 
 ```text
 Documents
-    ↓
-Loading
     ↓
 Chunking
     ↓
@@ -20,84 +86,43 @@ Metadata
 Local Index
 ```
 
-Дополнительно реализованы и сравниваются две стратегии разбиения документов:
+Результатом стал локальный индекс:
 
 ```text
-Fixed-size Chunking
-        VS
-Structure-aware Chunking
+indexes/index_structured.json
 ```
 
----
+На Дне 22 этот индекс используется для поиска.
 
-# Корпус документов
-
-Для эксперимента подготовлен локальный набор документов разных типов:
+Получается полный pipeline:
 
 ```text
-documents/
-├── README.md
-├── rag_notes.md
-├── mcp_notes.md
-├── android_architecture.md
-├── agent_design.txt
-├── chunking_comparison.md
-├── python_services.md
-├── software_architecture.md
-├── indexer_example.py
-├── compose_example.kt
-└── index_config_examples.json
-```
+DAY 21
 
-Корпус содержит:
-
-- Markdown;
-- обычный текст;
-- Python-код;
-- Kotlin-код;
-- JSON.
-
-Общий объём подготовленного корпуса составляет около:
-
-```text
-79 700 символов
-```
-
-При условной оценке:
-
-```text
-~1800 символов = 1 страница
-```
-
-получается около:
-
-```text
-44 страниц текста
-```
-
-Это превышает минимальное требование задания в 20–30 страниц или эквивалентный объём кода.
-
----
-
-# Тематика документов
-
-Корпус содержит материалы по нескольким темам:
-
-```text
-RAG
-MCP
-AI Agents
-Chunking
+Documents
+    ↓
+Chunks
+    ↓
 Embeddings
-Software Architecture
-Python Services
-Android
-Kotlin
-Jetpack Compose
-Document Indexing
-```
+    ↓
+Index
 
-Разные типы документов позволяют проверить работу chunking не только на обычном тексте, но и на структурированных Markdown-файлах и исходном коде.
+=========================
+
+DAY 22
+
+Question
+    ↓
+Query Embedding
+    ↓
+Index Search
+    ↓
+Relevant Chunks
+    ↓
+LLM
+    ↓
+Answer
+```
 
 ---
 
@@ -106,6 +131,9 @@ Document Indexing
 ```text
 .
 ├── main.py
+├── index_documents.py
+├── control_questions.json
+├── README.md
 │
 ├── documents/
 │   ├── README.md
@@ -120,341 +148,550 @@ Document Indexing
 │   ├── compose_example.kt
 │   └── index_config_examples.json
 │
-├── indexes/
-│   ├── index_fixed.json
-│   └── index_structured.json
-│
-└── README.md
+└── indexes/
+    ├── index_fixed.json
+    └── index_structured.json
 ```
 
 ---
 
-# Pipeline индексации
+# index_documents.py
 
-Полный процесс:
+Файл содержит pipeline индексации из Дня 21.
+
+Он выполняет:
 
 ```text
 documents/
     ↓
 load_documents()
     ↓
-┌───────────────────────┐
-│                       │
-↓                       ↓
-Fixed Chunking     Structured Chunking
-│                       │
-↓                       ↓
-Chunks                  Chunks
-│                       │
-↓                       ↓
-Embeddings             Embeddings
-│                       │
-↓                       ↓
-Metadata               Metadata
-│                       │
-↓                       ↓
-index_fixed.json   index_structured.json
+chunking
+    ↓
+embeddings
+    ↓
+local indexes
 ```
 
-Обе стратегии используют один и тот же набор документов и одну модель embeddings.
+Если индекс ещё не создан:
 
-Это позволяет сравнивать именно способ chunking.
+```powershell
+py index_documents.py
+```
+
+После выполнения появляются:
+
+```text
+indexes/index_fixed.json
+indexes/index_structured.json
+```
 
 ---
 
-# Загрузка документов
+# main.py
+
+Главный файл Дня 22.
+
+Он реализует два режима:
+
+```text
+WITHOUT RAG
+WITH RAG
+```
+
+Один пользовательский вопрос отправляется через оба pipeline, поэтому ответы можно сравнить непосредственно в консоли.
+
+---
+
+# Режим WITHOUT RAG
+
+Первый режим отправляет вопрос непосредственно в LLM:
+
+```text
+Question
+   ↓
+Gemini
+   ↓
+Answer
+```
+
+Локальный индекс документов при генерации этого ответа не используется.
 
 Функция:
 
 ```python
-load_documents()
+ask_without_rag()
 ```
 
-рекурсивно читает каталог:
-
-```text
-documents/
-```
-
-Поддерживаются расширения:
-
-```text
-.txt
-.md
-.py
-.kt
-.java
-.json
-```
-
-Файлы читаются в UTF-8.
-
-Пустые документы пропускаются.
-
-Для каждого документа сохраняются:
-
-```text
-source
-title
-text
-```
-
-Например:
-
-```json
-{
-  "source": "documents/rag_notes.md",
-  "title": "rag_notes.md",
-  "text": "..."
-}
-```
+позволяет получить baseline для сравнения.
 
 ---
 
-# Strategy 1 — Fixed-size Chunking
+# Режим WITH RAG
 
-Первая стратегия делит документ по фиксированному размеру.
-
-Настройки:
-
-```python
-FIXED_CHUNK_SIZE = 1200
-FIXED_CHUNK_OVERLAP = 200
-```
-
-То есть один chunk содержит максимум примерно:
+Второй режим выполняет полный retrieval pipeline:
 
 ```text
-1200 символов
-```
-
-а соседние chunks имеют overlap:
-
-```text
-200 символов
-```
-
----
-
-# Зачем нужен overlap
-
-Без overlap:
-
-```text
-Chunk 1
-[----------------]
-
-Chunk 2
-                  [----------------]
-```
-
-Информация на границе может потерять контекст.
-
-С overlap:
-
-```text
-Chunk 1
-[----------------]
-
-             [----------------]
-             Chunk 2
-```
-
-часть предыдущего chunk повторяется в следующем.
-
-Это уменьшает вероятность потери смысловой связи на границе.
-
----
-
-# Преимущества Fixed Chunking
-
-Fixed-size chunking:
-
-- очень простой;
-- работает почти с любым текстом;
-- создаёт chunks похожего размера;
-- легко настраивается;
-- не требует понимания формата документа.
-
----
-
-# Недостатки Fixed Chunking
-
-Алгоритм ничего не знает о структуре документа.
-
-Например:
-
-```markdown
-# Authentication
-
-Для авторизации приложение использует
-JWT token, который...
-
----------- CHUNK BOUNDARY ----------
-
-...передаётся серверу в HTTP header.
-```
-
-Граница может пройти:
-
-- внутри предложения;
-- внутри раздела;
-- внутри функции;
-- между заголовком и его содержимым.
-
----
-
-# Metadata Fixed Chunk
-
-Пример:
-
-```json
-{
-  "source": "documents/rag_notes.md",
-  "title": "rag_notes.md",
-  "section": null,
-  "chunk_id": "rag_notes.md::fixed::0003",
-  "strategy": "fixed",
-  "start_char": 3000,
-  "end_char": 4200
-}
-```
-
-Здесь `section` может быть `null`, потому что fixed chunking не анализирует логическую структуру документа.
-
----
-
-# Strategy 2 — Structured Chunking
-
-Вторая стратегия учитывает структуру документа.
-
-Функции:
-
-```python
-detect_sections()
-structured_chunking()
-```
-
-Сначала документ разбивается на логические разделы.
-
-После этого большие разделы дополнительно ограничиваются по размеру.
-
----
-
-# Markdown Chunking
-
-Для Markdown используются заголовки:
-
-```markdown
-# RAG
-
-## Chunking
-
-## Embeddings
-
-## Retrieval
-
-## Evaluation
-```
-
-Каждый раздел становится отдельной логической единицей.
-
-Например:
-
-```text
-section = Chunking
-```
-
-или:
-
-```text
-section = Embeddings
-```
-
----
-
-# Python Chunking
-
-Для Python определяются конструкции:
-
-```python
-class Agent:
-    ...
-```
-
-```python
-def search():
-    ...
-```
-
-```python
-async def execute():
-    ...
-```
-
-Таким образом chunk может соответствовать конкретной функции или классу.
-
-Например:
-
-```json
-{
-  "source": "documents/indexer_example.py",
-  "title": "indexer_example.py",
-  "section": "fixed_chunks",
-  "chunk_id": "indexer_example.py::structured::0003",
-  "strategy": "structured"
-}
-```
-
----
-
-# Остальные форматы
-
-Если для документа нет специального структурного parser-а, весь файл сначала рассматривается как один section:
-
-```text
-section = filename
-```
-
-Если section слишком большой, он дополнительно разбивается на ограниченные chunks.
-
----
-
-# Ограничение размера Structured Chunk
-
-Structured chunking не означает:
-
-```text
-1 section = chunk любого размера
-```
-
-Если один раздел содержит очень много текста:
-
-```text
-SECTION
+Question
    ↓
-слишком большой
+Query Embedding
    ↓
-разделить внутри section
+Cosine Similarity
+   ↓
+Top-K Chunks
+   ↓
+Build Context
+   ↓
+Context + Question
+   ↓
+Gemini
+   ↓
+RAG Answer
 ```
 
-При этом metadata исходного section сохраняются.
+---
 
-Это позволяет совместить:
+# Загрузка индекса
+
+Для retrieval используется:
 
 ```text
-логическую структуру
+indexes/index_structured.json
+```
+
+Индекс содержит:
+
+```text
+chunk text
 +
-ограниченный размер chunk
+metadata
++
+embedding
 ```
+
+Пример записи:
+
+```json
+{
+  "text": "...",
+  "metadata": {
+    "source": "documents/rag_notes.md",
+    "title": "rag_notes.md",
+    "section": "Retrieval",
+    "chunk_id": "rag_notes.md::structured::0004",
+    "strategy": "structured"
+  },
+  "embedding": [
+    0.012,
+    -0.041,
+    0.087
+  ]
+}
+```
+
+---
+
+# Почему используется Structured Index
+
+На Дне 21 были созданы два индекса:
+
+```text
+index_fixed.json
+index_structured.json
+```
+
+Для первого RAG-запроса выбран:
+
+```text
+index_structured.json
+```
+
+Structured chunks дополнительно содержат информацию о логических разделах документа.
+
+Например:
+
+```text
+File:
+rag_notes.md
+
+Section:
+Retrieval
+```
+
+Это делает найденный контекст более понятным при выводе источников.
+
+---
+
+# Query Embedding
+
+Для поиска вопрос сначала преобразуется в embedding:
+
+```text
+Question
+   ↓
+Embedding Model
+   ↓
+Vector
+```
+
+Например концептуально:
+
+```text
+"Зачем используется overlap?"
+
+↓
+
+[0.12, -0.04, 0.08, ...]
+```
+
+Функция:
+
+```python
+create_query_embedding()
+```
+
+создаёт embedding пользовательского вопроса.
+
+---
+
+# Совместимость Embeddings
+
+Document embeddings и query embedding должны использовать совместимую конфигурацию.
+
+Индекс Дня 21 и запрос Дня 22 используют одну embedding-модель и одинаковую размерность.
+
+В проекте:
+
+```text
+Embedding dimensions: 768
+```
+
+Это позволяет корректно сравнивать vectors.
+
+---
+
+# Поиск релевантных chunks
+
+Функция:
+
+```python
+search_chunks()
+```
+
+сравнивает embedding вопроса с embedding каждого chunk в локальном индексе.
+
+Pipeline:
+
+```text
+Query Embedding
+       ↓
+┌──────┼──────────────┐
+↓      ↓              ↓
+Chunk1 Chunk2 ... ChunkN
+↓      ↓              ↓
+score  score          score
+       ↓
+sort descending
+       ↓
+TOP-K
+```
+
+---
+
+# Cosine Similarity
+
+Для сравнения vectors используется cosine similarity:
+
+```text
+                 A · B
+cos(A, B) = ----------------
+              ||A|| × ||B||
+```
+
+Где:
+
+```text
+A = embedding вопроса
+B = embedding chunk
+```
+
+Чем выше similarity, тем ближе содержание chunk к пользовательскому вопросу.
+
+---
+
+# Почему поиск выполняется по всем chunks
+
+Индекс учебный и относительно небольшой.
+
+Поэтому можно выполнить:
+
+```text
+Query
+  ↓
+compare with chunk 1
+compare with chunk 2
+compare with chunk 3
+...
+compare with chunk N
+```
+
+После этого результаты сортируются.
+
+Для небольшого локального корпуса этого достаточно.
+
+Для больших баз обычно применяются специализированные vector indexes и vector databases.
+
+---
+
+# TOP-K
+
+После расчёта similarity выбираются наиболее релевантные chunks.
+
+В проекте:
+
+```python
+TOP_K = 4
+```
+
+То есть:
+
+```text
+All Chunks
+    ↓
+Similarity
+    ↓
+Sorting
+    ↓
+Top 4
+```
+
+Именно эти четыре chunks передаются модели как дополнительный контекст.
+
+---
+
+# Вывод найденных источников
+
+Перед RAG-ответом программа показывает найденные chunks.
+
+Например:
+
+```text
+============================================================
+НАЙДЕННЫЕ CHUNKS
+============================================================
+
+1. rag_notes.md
+   Section: Retrieval
+   Chunk ID: rag_notes.md::structured::0004
+   Similarity: ...
+
+2. chunking_comparison.md
+   Section: Purpose
+   Chunk ID: ...
+   Similarity: ...
+```
+
+Это позволяет отдельно проверить качество retrieval.
 
 ---
 
 # Metadata
 
-Каждый chunk содержит metadata.
+Для каждого найденного chunk доступны:
 
-Основные поля:
+```text
+source
+title
+section
+chunk_id
+strategy
+```
+
+Это позволяет понять:
+
+```text
+откуда пришла информация
+```
+
+ещё до генерации ответа LLM.
+
+---
+
+# Построение Context
+
+Функция:
+
+```python
+build_context()
+```
+
+объединяет найденные chunks.
+
+Каждый источник передаётся примерно в таком формате:
+
+```text
+--- SOURCE 1 ---
+
+File:
+rag_notes.md
+
+Section:
+Retrieval
+
+Chunk ID:
+rag_notes.md::structured::0004
+
+Text:
+...
+```
+
+После этого несколько источников объединяются:
+
+```text
+SOURCE 1
+
+SOURCE 2
+
+SOURCE 3
+
+SOURCE 4
+```
+
+---
+
+# RAG Prompt
+
+После retrieval модель получает:
+
+```text
+Instructions
++
+Retrieved Context
++
+User Question
+```
+
+То есть:
+
+```text
+CONTEXT:
+
+[chunk 1]
+
+[chunk 2]
+
+[chunk 3]
+
+[chunk 4]
+
+
+QUESTION:
+
+вопрос пользователя
+```
+
+Модели дополнительно указывается:
+
+```text
+использовать информацию из context
+```
+
+и:
+
+```text
+не придумывать отсутствующие в документах факты
+```
+
+Если информации недостаточно, модель должна сообщить об этом.
+
+---
+
+# Полный RAG Flow
+
+```text
+USER QUESTION
+      ↓
+create_query_embedding()
+      ↓
+QUERY VECTOR
+      ↓
+search_chunks()
+      ↓
+COSINE SIMILARITY
+      ↓
+SORT
+      ↓
+TOP-4 CHUNKS
+      ↓
+build_context()
+      ↓
+CONTEXT + QUESTION
+      ↓
+ask_with_rag()
+      ↓
+GEMINI
+      ↓
+RAG ANSWER
+```
+
+---
+
+# Сравнение WITH RAG / WITHOUT RAG
+
+Один вопрос проходит через два независимых режима.
+
+```text
+                     ┌───────────────────┐
+                     │     QUESTION      │
+                     └─────────┬─────────┘
+                               │
+                  ┌────────────┴────────────┐
+                  ↓                         ↓
+            WITHOUT RAG                 WITH RAG
+                  ↓                         ↓
+                Gemini               Query Embedding
+                  ↓                         ↓
+               Answer                 Local Index
+                                            ↓
+                                       Retrieval
+                                            ↓
+                                        Top-K
+                                            ↓
+                                     Context + Question
+                                            ↓
+                                          Gemini
+                                            ↓
+                                         Answer
+```
+
+Это позволяет сравнить обычный ответ модели с ответом, основанным на локальной базе документов.
+
+---
+
+# Почему RAG не означает автоматически лучший ответ
+
+Обычная модель уже может хорошо отвечать на общеизвестные вопросы.
+
+Например:
+
+```text
+Что такое embeddings?
+```
+
+может получить хороший ответ и без RAG.
+
+Основная ценность RAG проявляется, когда вопрос относится к конкретной локальной базе:
+
+```text
+Какие metadata сохраняются
+для каждого chunk в нашем проекте?
+```
+
+Без RAG модель знает общую концепцию metadata.
+
+Но она не обязана знать конкретную структуру нашего проекта.
+
+RAG позволяет найти именно локальные данные:
 
 ```text
 source
@@ -466,371 +703,319 @@ strategy
 
 ---
 
-# source
+# Контрольный набор
 
-Путь к исходному документу.
-
-Например:
+Для проверки создан файл:
 
 ```text
-documents/mcp_notes.md
+control_questions.json
+```
+
+Он содержит 10 контрольных вопросов.
+
+Каждый тест содержит:
+
+```text
+question
+expected
+expected_sources
 ```
 
 ---
 
-# title
-
-Имя исходного файла.
+# Структура контрольного теста
 
 Например:
+
+```json
+{
+  "id": 1,
+  "question": "Какие metadata сохраняются для каждого chunk?",
+  "expected": "В ответе должны быть source, title, section, chunk_id и strategy.",
+  "expected_sources": [
+    "README.md",
+    "chunking_comparison.md"
+  ]
+}
+```
+
+Таким образом для каждого вопроса заранее известно:
+
+```text
+что ожидается в ответе
+```
+
+и:
+
+```text
+какие документы желательно найти
+```
+
+---
+
+# 10 контрольных вопросов
+
+Контрольный набор проверяет несколько областей локальной базы.
+
+## 1. Chunk Metadata
+
+```text
+Какие metadata сохраняются для каждого chunk?
+```
+
+Ожидается:
+
+```text
+source
+title
+section
+chunk_id
+strategy
+```
+
+Источники:
+
+```text
+README.md
+chunking_comparison.md
+```
+
+---
+
+## 2. Fixed Chunking
+
+```text
+В чем недостаток fixed-size chunking?
+```
+
+Ожидается объяснение того, что фиксированная граница может разрывать логические единицы текста.
+
+Источники:
+
+```text
+README.md
+chunking_comparison.md
+```
+
+---
+
+## 3. Chunk Overlap
+
+```text
+Зачем используется overlap между chunks?
+```
+
+Ожидается объяснение сохранения контекста на границах.
+
+Источники:
+
+```text
+rag_notes.md
+chunking_comparison.md
+```
+
+---
+
+## 4. RAG Ingestion
+
+```text
+Что происходит на этапе ingestion в RAG?
+```
+
+Ожидается:
+
+```text
+loading
+normalization
+chunking
+embeddings
+indexing
+```
+
+Источник:
+
+```text
+rag_notes.md
+```
+
+---
+
+## 5. MCP Orchestration
+
+```text
+Какую роль выполняет orchestrator
+при работе с несколькими MCP-серверами?
+```
+
+Источники:
 
 ```text
 mcp_notes.md
+agent_design.txt
 ```
 
 ---
 
-# section
-
-Логический раздел.
-
-Например:
+## 6. Agent Memory
 
 ```text
-Tool Composition
+Чем working memory отличается
+от long-term memory агента?
 ```
 
-или:
+Источник:
 
 ```text
-Agent Routing
-```
-
-Для fixed chunking значение может быть:
-
-```text
-null
+agent_design.txt
 ```
 
 ---
 
-# chunk_id
-
-Каждый chunk получает уникальный идентификатор.
-
-Fixed:
+## 7. Android MVVM
 
 ```text
-mcp_notes.md::fixed::0004
+Какую роль ViewModel выполняет в MVVM?
 ```
 
-Structured:
+Источник:
 
 ```text
-mcp_notes.md::structured::0004
-```
-
-Это позволяет определить:
-
-```text
-документ
-+
-стратегию
-+
-номер chunk
+android_architecture.md
 ```
 
 ---
 
-# strategy
-
-Metadata также явно хранит использованную стратегию:
+## 8. JSON Index
 
 ```text
-fixed
+Почему JSON удобен
+для учебного локального индекса?
 ```
 
-или:
+Источники:
 
 ```text
-structured
+README.md
+software_architecture.md
 ```
 
 ---
 
-# Embeddings
-
-После chunking каждый текстовый chunk преобразуется в embedding.
-
-Pipeline:
+## 9. Structured Chunk Size
 
 ```text
-Chunk Text
+Почему structured chunking
+всё равно должен ограничивать
+максимальный размер chunk?
+```
+
+Источник:
+
+```text
+chunking_comparison.md
+```
+
+---
+
+## 10. RAG Failure Modes
+
+```text
+Какие проблемы могут ухудшить качество RAG?
+```
+
+Источник:
+
+```text
+rag_notes.md
+```
+
+---
+
+# Зачем нужен контрольный набор
+
+Без заранее подготовленных вопросов легко оценивать систему субъективно:
+
+```text
+"Ответ выглядит нормально"
+```
+
+Контрольный набор добавляет критерии:
+
+```text
+Question
     ↓
-Embedding Model
+Expected Content
     ↓
-Vector
+Expected Sources
 ```
 
-Embedding представляет текст как числовой вектор.
+Теперь можно отдельно проверять:
 
-В проекте используется Gemini Embedding API.
-
-Модель задаётся через:
-
-```python
-EMBEDDING_MODEL
+```text
+Retrieval Quality
 ```
 
-Для индекса используется размерность:
+и:
 
-```python
-EMBEDDING_DIMENSIONS = 768
+```text
+Answer Quality
 ```
 
 ---
 
-# Создание embedding
+# Retrieval Quality
 
-Для каждого chunk вызывается:
-
-```python
-client.models.embed_content(...)
-```
-
-После чего полученный vector сохраняется вместе с:
+Если вопрос:
 
 ```text
-text
-metadata
+Зачем используется overlap между chunks?
 ```
+
+ожидаемые документы:
+
+```text
+rag_notes.md
+chunking_comparison.md
+```
+
+Если retrieval действительно возвращает эти документы среди наиболее релевантных chunks, поиск работает ожидаемо.
+
+Если вместо них появляются только нерелевантные документы, проблема находится на retrieval-этапе.
 
 ---
 
-# Структура индексированного chunk
+# Answer Quality
 
-Итоговая запись выглядит примерно так:
+Даже при хорошем retrieval модель ещё должна правильно использовать полученный context.
 
-```json
-{
-  "text": "Chunking determines the retrieval unit...",
-  "metadata": {
-    "source": "documents/chunking_comparison.md",
-    "title": "chunking_comparison.md",
-    "section": "Purpose",
-    "chunk_id": "chunking_comparison.md::structured::0000",
-    "strategy": "structured"
-  },
-  "embedding": [
-    0.012,
-    -0.034,
-    0.081
-  ]
-}
-```
-
-Реальный embedding содержит значительно больше чисел.
-
----
-
-# Local Index
-
-В учебной реализации используется JSON.
-
-Создаются два отдельных индекса:
+Поэтому RAG состоит из двух разных задач:
 
 ```text
-indexes/index_fixed.json
-indexes/index_structured.json
+1. Найти правильную информацию.
+
+2. Сформировать правильный ответ
+   на основе этой информации.
 ```
 
-Первый содержит chunks:
-
-```text
-fixed
-```
-
-второй:
-
-```text
-structured
-```
-
----
-
-# Структура Index
-
-Пример:
-
-```json
-{
-  "strategy": "structured",
-  "embedding_model": "...",
-  "embedding_dimensions": 768,
-  "chunks_count": 42,
-  "chunks": [
-    {
-      "text": "...",
-      "metadata": {
-        "source": "...",
-        "title": "...",
-        "section": "...",
-        "chunk_id": "...",
-        "strategy": "structured"
-      },
-      "embedding": [
-        0.1,
-        -0.2
-      ]
-    }
-  ]
-}
-```
-
-Таким образом индекс полностью локальный.
-
----
-
-# Почему JSON
-
-В задании разрешены:
-
-```text
-FAISS
-SQLite
-JSON
-```
-
-Для учебного проекта выбран JSON.
-
-Преимущества:
-
-- не требуется отдельная база;
-- легко открыть;
-- легко проверить embeddings;
-- хорошо видны metadata;
-- удобно демонстрировать на видео;
-- помогает понять структуру vector index.
-
-Для большого production-проекта JSON не является оптимальным vector storage.
-
-В дальнейшем его можно заменить на:
-
-```text
-FAISS
-SQLite
-Vector Database
-```
-
----
-
-# Сравнение стратегий
-
-После chunking программа выводит статистику:
-
-```text
-Документов
-Количество символов
-Примерный объём страниц
-
-Количество Fixed chunks
-Количество Structured chunks
-
-Средний размер Fixed chunk
-Средний размер Structured chunk
-```
-
-Это позволяет увидеть, как разные алгоритмы разбивают один и тот же корпус.
-
----
-
-# Fixed vs Structured
-
-## Fixed
-
-```text
-Document
- ↓
-1200 chars
- ↓
-200 overlap
- ↓
-next 1200 chars
-```
-
-Преимущество:
-
-```text
-простота
-```
-
-Недостаток:
-
-```text
-не учитывает смысловые границы
-```
-
----
-
-## Structured
-
-```text
-Document
- ↓
-Sections
- ↓
-Headings / Functions / Classes
- ↓
-Size Limit
- ↓
-Chunks
-```
-
-Преимущество:
-
-```text
-лучше сохраняется структура документа
-```
-
-Недостаток:
-
-```text
-нужны правила для разных форматов
-```
-
----
-
-# Главное отличие
-
-Fixed chunking отвечает на вопрос:
-
-```text
-Сколько символов поместить в chunk?
-```
-
-Structured chunking сначала отвечает:
-
-```text
-Где находится логическая граница?
-```
-
-а затем:
-
-```text
-Не слишком ли большой получился section?
-```
+Хороший RAG требует работы обоих этапов.
 
 ---
 
 # Запуск
 
-Проверить документы:
+Если индекс уже существует:
 
 ```powershell
-Get-ChildItem .\documents
+py main.py
 ```
 
-Запустить индексатор:
+Если индекс отсутствует:
+
+```powershell
+py index_documents.py
+```
+
+а затем:
 
 ```powershell
 py main.py
@@ -838,165 +1023,217 @@ py main.py
 
 ---
 
-# Проверка индексов
+# Первый тест
 
-После завершения:
-
-```powershell
-Get-ChildItem .\indexes
-```
-
-Должны появиться:
+Например:
 
 ```text
-index_fixed.json
-index_structured.json
+Какие metadata сохраняются для каждого chunk?
+```
+
+Программа сначала показывает:
+
+```text
+БЕЗ RAG
+```
+
+затем:
+
+```text
+НАЙДЕННЫЕ CHUNKS
+```
+
+и после этого:
+
+```text
+С RAG
 ```
 
 ---
 
-# Просмотр Structured Index
+# Второй тест
 
-PowerShell:
+```text
+Почему structured chunking всё равно должен
+ограничивать максимальный размер chunk?
+```
 
-```powershell
-Get-Content .\indexes\index_structured.json -Encoding UTF8 -TotalCount 40
+Ожидаемый источник:
+
+```text
+chunking_comparison.md
 ```
 
 ---
 
-# Просмотр Fixed Index
+# Третий тест
 
-```powershell
-Get-Content .\indexes\index_fixed.json -Encoding UTF8 -TotalCount 40
+```text
+Какую роль выполняет orchestrator
+при работе с несколькими MCP-серверами?
+```
+
+Ожидаемые источники:
+
+```text
+mcp_notes.md
+agent_design.txt
 ```
 
 ---
 
-# Что проверяется
+# Что показать на видео
 
-Проект демонстрирует полный ingestion pipeline:
+Удобный демонстрационный вопрос:
 
 ```text
-DOCUMENTS
-    ↓
-LOAD
-    ↓
-CHUNK
-    ↓
-EMBED
-    ↓
-METADATA
-    ↓
-INDEX
+Какие metadata сохраняются для каждого chunk?
 ```
 
-Также выполняется сравнительный эксперимент:
+На одном экране можно показать:
 
 ```text
-              SAME DOCUMENTS
-                    ↓
-           ┌────────┴────────┐
-           ↓                 ↓
-        FIXED            STRUCTURED
-           ↓                 ↓
-        CHUNKS             CHUNKS
-           ↓                 ↓
-      EMBEDDINGS         EMBEDDINGS
-           ↓                 ↓
-      FIXED INDEX      STRUCTURED INDEX
+1. Question
+
+2. WITHOUT RAG answer
+
+3. Retrieved Top-K chunks
+
+4. File / Section / Chunk ID / Similarity
+
+5. WITH RAG answer
+```
+
+После этого открыть:
+
+```text
+control_questions.json
+```
+
+и показать:
+
+```text
+question
+expected
+expected_sources
 ```
 
 ---
 
 # Результат
 
-В результате реализованы:
-
-- корпус документов объёмом более 20–30 страниц;
-- загрузка нескольких форматов;
-- fixed-size chunking;
-- chunk overlap;
-- structure-aware chunking;
-- обработка Markdown sections;
-- обработка Python classes/functions;
-- metadata;
-- уникальные chunk IDs;
-- embeddings;
-- локальное хранение embeddings;
-- два независимых JSON-индекса;
-- статистика;
-- сравнение двух стратегий chunking.
-
-Финальный результат:
+Реализован первый локальный RAG pipeline:
 
 ```text
-documents/
+Question
     ↓
-2 Chunking Strategies
+Embedding
     ↓
-Embeddings
-    ↓
-Metadata
-    ↓
-Local Vector Indexes
-```
-
----
-
-# Что дальше
-
-Текущий этап решает задачу:
-
-```text
-INDEXING
-```
-
-Но пока не выполняет:
-
-```text
-SEMANTIC SEARCH
-```
-
-Следующим логическим этапом является retrieval:
-
-```text
-User Query
-    ↓
-Query Embedding
-    ↓
-Vector Similarity
+Vector Search
     ↓
 Top-K Chunks
     ↓
-Relevant Context
+Context
+    ↓
+LLM
+    ↓
+Answer
 ```
 
-Созданные на Дне 21 индексы уже содержат необходимые для этого embeddings и metadata.
+Также реализован baseline:
+
+```text
+Question
+    ↓
+LLM
+    ↓
+Answer Without RAG
+```
+
+Благодаря этому ответы можно сравнивать.
 
 ---
 
-# Итог
+# Реализовано
 
-День 21 создаёт основу локальной RAG-системы.
+- загрузка локального vector index;
+- embedding пользовательского вопроса;
+- cosine similarity;
+- поиск по всем chunks;
+- сортировка по similarity;
+- Top-K retrieval;
+- вывод найденных источников;
+- metadata источников;
+- построение RAG context;
+- запрос к LLM без RAG;
+- запрос к LLM с RAG;
+- сравнение двух режимов;
+- 10 контрольных вопросов;
+- ожидаемое содержание ответов;
+- ожидаемые источники.
 
-Мы перешли от обычных документов:
+---
+
+# Итоговая архитектура
 
 ```text
-README
-Articles
-Code
-Text
+                        USER
+                          ↓
+                       QUESTION
+                          ↓
+            ┌─────────────┴─────────────┐
+            │                           │
+            ↓                           ↓
+       WITHOUT RAG                   WITH RAG
+            │                           │
+            ↓                           ↓
+           LLM                    Query Embedding
+            │                           │
+            │                           ↓
+            │                      Local Index
+            │                           │
+            │                           ↓
+            │                   Cosine Similarity
+            │                           │
+            │                           ↓
+            │                        Top-K
+            │                           │
+            │                           ↓
+            │                    Retrieved Context
+            │                           │
+            │                           ↓
+            │                          LLM
+            │                           │
+            ↓                           ↓
+         ANSWER                      ANSWER
+            │                           │
+            └─────────────┬─────────────┘
+                          ↓
+                       COMPARE
 ```
 
-к структурированному индексу:
+---
+
+# Вывод
+
+На Дне 21 была создана база для retrieval:
 
 ```text
-Chunk
-+
-Embedding
-+
-Metadata
+Documents
+→ Chunks
+→ Embeddings
+→ Index
 ```
 
-и экспериментально подготовили две разные стратегии chunking для одного и того же корпуса документов.
+На Дне 22 индекс впервые начал использоваться:
+
+```text
+Question
+→ Query Embedding
+→ Similarity Search
+→ Relevant Chunks
+→ Context
+→ LLM
+```
+
+Таким образом был реализован первый полный RAG-запрос и создан baseline для сравнения ответов модели с использованием локальной базы документов и без неё.
