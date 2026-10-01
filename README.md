@@ -1,78 +1,56 @@
-# День 22 — Первый RAG-запрос
+# День 23 — Реранкинг и фильтрация RAG
 
 ## Цель
 
-Реализовать первый полноценный RAG pipeline поверх локального индекса документов, созданного на Дне 21.
+Улучшить RAG pipeline, созданный на Дне 22.
 
-Система должна выполнять цепочку:
+Простой Top-K retrieval всегда возвращает некоторое количество chunks, даже если пользовательский вопрос вообще не относится к локальной базе.
 
-```text
-Вопрос пользователя
-        ↓
-Embedding вопроса
-        ↓
-Поиск релевантных chunks
-        ↓
-Top-K chunks
-        ↓
-Контекст + вопрос
-        ↓
-LLM
-        ↓
-Ответ на основе локальных документов
-```
-
-Дополнительно реализовано сравнение двух режимов:
+На Дне 23 добавлены:
 
 ```text
-WITHOUT RAG
-vs
-WITH RAG
+Query Rewrite
++
+расширенный поиск кандидатов
++
+Similarity Filter
++
+Top-K после фильтрации
 ```
 
-и подготовлен набор из 10 контрольных вопросов для оценки качества retrieval и ответов.
-
----
-
-# Что такое RAG
-
-RAG — Retrieval-Augmented Generation.
-
-Обычный LLM-запрос выглядит так:
+Теперь pipeline выглядит так:
 
 ```text
 Question
-   ↓
+    ↓
+Query Rewrite
+    ↓
+Query Embedding
+    ↓
+Vector Search
+    ↓
+Top-K Candidates
+    ↓
+Similarity Filter
+    ↓
+Filtered Top-K
+    ↓
+Context
+    ↓
 LLM
-   ↓
+    ↓
 Answer
 ```
 
-Модель отвечает на основе собственных знаний.
-
-RAG добавляет перед LLM этап поиска информации:
-
-```text
-Question
-   ↓
-Retrieval
-   ↓
-Relevant Documents
-   ↓
-Question + Context
-   ↓
-LLM
-   ↓
-Answer
-```
-
-Таким образом модель получает дополнительный контекст из нашей локальной базы документов.
+Дополнительно сохранён baseline RAG из Дня 22, чтобы сравнивать оба режима на одинаковых вопросах.
 
 ---
 
-# Связь с Днём 21
+# Развитие проекта
 
-На Дне 21 был создан pipeline индексации:
+## День 21
+
+Был создан локальный индекс:
 
 ```text
 Documents
@@ -86,42 +64,42 @@ Metadata
 Local Index
 ```
 
-Результатом стал локальный индекс:
+## День 22
+
+Появился первый RAG:
 
 ```text
-indexes/index_structured.json
-```
-
-На Дне 22 этот индекс используется для поиска.
-
-Получается полный pipeline:
-
-```text
-DAY 21
-
-Documents
-    ↓
-Chunks
-    ↓
-Embeddings
-    ↓
-Index
-
-=========================
-
-DAY 22
-
 Question
     ↓
-Query Embedding
+Embedding
     ↓
-Index Search
+Similarity Search
+    ↓
+Top-K
+    ↓
+Context
+    ↓
+LLM
+```
+
+## День 23
+
+Retrieval становится двухэтапным:
+
+```text
+Question
+    ↓
+Rewrite
+    ↓
+Retrieval
+    ↓
+Candidates
+    ↓
+Filter
     ↓
 Relevant Chunks
     ↓
 LLM
-    ↓
-Answer
 ```
 
 ---
@@ -155,252 +133,190 @@ Answer
 
 ---
 
-# index_documents.py
+# Два режима RAG
 
-Файл содержит pipeline индексации из Дня 21.
+Для сравнения реализованы два независимых режима.
 
-Он выполняет:
+## Mode 1 — Baseline RAG
 
-```text
-documents/
-    ↓
-load_documents()
-    ↓
-chunking
-    ↓
-embeddings
-    ↓
-local indexes
-```
-
-Если индекс ещё не создан:
-
-```powershell
-py index_documents.py
-```
-
-После выполнения появляются:
+Baseline соответствует подходу Дня 22:
 
 ```text
-indexes/index_fixed.json
-indexes/index_structured.json
+Original Question
+        ↓
+Query Embedding
+        ↓
+Vector Search
+        ↓
+Top-4
+        ↓
+Context
+        ↓
+LLM
 ```
 
----
-
-# main.py
-
-Главный файл Дня 22.
-
-Он реализует два режима:
-
-```text
-WITHOUT RAG
-WITH RAG
-```
-
-Один пользовательский вопрос отправляется через оба pipeline, поэтому ответы можно сравнить непосредственно в консоли.
-
----
-
-# Режим WITHOUT RAG
-
-Первый режим отправляет вопрос непосредственно в LLM:
-
-```text
-Question
-   ↓
-Gemini
-   ↓
-Answer
-```
-
-Локальный индекс документов при генерации этого ответа не используется.
-
-Функция:
+Настройка:
 
 ```python
-ask_without_rag()
+BASELINE_TOP_K = 4
 ```
 
-позволяет получить baseline для сравнения.
+Здесь отсутствуют:
+
+```text
+Query Rewrite
+Similarity Threshold
+Filtering
+```
+
+Поэтому поиск всегда возвращает четыре наиболее похожих chunk, даже если их абсолютная релевантность низкая.
 
 ---
 
-# Режим WITH RAG
+# Mode 2 — Improved RAG
 
-Второй режим выполняет полный retrieval pipeline:
+Улучшенный pipeline:
 
 ```text
-Question
-   ↓
+Original Question
+        ↓
+Query Rewrite
+        ↓
+Rewritten Query
+        ↓
 Query Embedding
-   ↓
-Cosine Similarity
-   ↓
-Top-K Chunks
-   ↓
-Build Context
-   ↓
-Context + Question
-   ↓
-Gemini
-   ↓
-RAG Answer
+        ↓
+Vector Search
+        ↓
+Top-8 Candidates
+        ↓
+Similarity Filter
+        ↓
+Maximum Top-4
+        ↓
+Context
+        ↓
+LLM
 ```
+
+Основные настройки:
+
+```python
+TOP_K_BEFORE_FILTER = 8
+TOP_K_AFTER_FILTER = 4
+
+SIMILARITY_THRESHOLD = 0.45
+```
+
+`0.45` используется как экспериментальный стартовый порог и может корректироваться по реальным similarity scores конкретного индекса.
 
 ---
 
-# Загрузка индекса
+# Query Rewrite
 
-Для retrieval используется:
-
-```text
-indexes/index_structured.json
-```
-
-Индекс содержит:
-
-```text
-chunk text
-+
-metadata
-+
-embedding
-```
-
-Пример записи:
-
-```json
-{
-  "text": "...",
-  "metadata": {
-    "source": "documents/rag_notes.md",
-    "title": "rag_notes.md",
-    "section": "Retrieval",
-    "chunk_id": "rag_notes.md::structured::0004",
-    "strategy": "structured"
-  },
-  "embedding": [
-    0.012,
-    -0.041,
-    0.087
-  ]
-}
-```
-
----
-
-# Почему используется Structured Index
-
-На Дне 21 были созданы два индекса:
-
-```text
-index_fixed.json
-index_structured.json
-```
-
-Для первого RAG-запроса выбран:
-
-```text
-index_structured.json
-```
-
-Structured chunks дополнительно содержат информацию о логических разделах документа.
+Пользователь не всегда формулирует вопрос как хороший поисковый запрос.
 
 Например:
 
 ```text
-File:
-rag_notes.md
-
-Section:
-Retrieval
+А зачем мы вообще делали этот overlap,
+когда документы резали?
 ```
 
-Это делает найденный контекст более понятным при выводе источников.
+Для человека смысл понятен.
 
----
-
-# Query Embedding
-
-Для поиска вопрос сначала преобразуется в embedding:
-
-```text
-Question
-   ↓
-Embedding Model
-   ↓
-Vector
-```
-
-Например концептуально:
-
-```text
-"Зачем используется overlap?"
-
-↓
-
-[0.12, -0.04, 0.08, ...]
-```
+Но semantic retrieval может получить более концентрированный запрос после rewriting.
 
 Функция:
 
 ```python
-create_query_embedding()
+rewrite_query()
 ```
 
-создаёт embedding пользовательского вопроса.
-
----
-
-# Совместимость Embeddings
-
-Document embeddings и query embedding должны использовать совместимую конфигурацию.
-
-Индекс Дня 21 и запрос Дня 22 используют одну embedding-модель и одинаковую размерность.
-
-В проекте:
-
-```text
-Embedding dimensions: 768
-```
-
-Это позволяет корректно сравнивать vectors.
-
----
-
-# Поиск релевантных chunks
-
-Функция:
-
-```python
-search_chunks()
-```
-
-сравнивает embedding вопроса с embedding каждого chunk в локальном индексе.
+использует LLM для преобразования пользовательского вопроса в поисковую формулировку.
 
 Pipeline:
 
 ```text
-Query Embedding
-       ↓
-┌──────┼──────────────┐
-↓      ↓              ↓
-Chunk1 Chunk2 ... ChunkN
-↓      ↓              ↓
-score  score          score
-       ↓
-sort descending
-       ↓
-TOP-K
+Natural Language Question
+          ↓
+         LLM
+          ↓
+Search-oriented Query
 ```
 
 ---
 
-# Cosine Similarity
+# Правила Query Rewrite
 
-Для сравнения vectors используется cosine similarity:
+Модель получает ограничения:
+
+```text
+сохранить исходный смысл
+не отвечать на вопрос
+не добавлять новые факты
+убрать разговорные слова
+вернуть только поисковый запрос
+```
+
+Таким образом rewrite используется только для retrieval.
+
+Исходный вопрос пользователя при этом сохраняется.
+
+Именно оригинальный вопрос позже передаётся модели для формирования финального ответа.
+
+---
+
+# Почему это важно
+
+Query Rewrite изменяет:
+
+```text
+что мы ищем
+```
+
+но не должен изменять:
+
+```text
+на какой вопрос отвечает пользователь
+```
+
+То есть:
+
+```text
+Original Question
+      │
+      ├────→ используется для final answer
+      │
+      ↓
+Query Rewrite
+      ↓
+используется для retrieval
+```
+
+---
+
+# Vector Search
+
+После rewriting создаётся embedding поискового запроса.
+
+```text
+Rewritten Query
+       ↓
+Embedding Model
+       ↓
+Query Vector
+```
+
+Он сравнивается с embeddings chunks локального индекса.
+
+Для сравнения используется:
+
+```text
+Cosine Similarity
+```
+
+Формула:
 
 ```text
                  A · B
@@ -411,309 +327,390 @@ cos(A, B) = ----------------
 Где:
 
 ```text
-A = embedding вопроса
-B = embedding chunk
+A = query embedding
+B = chunk embedding
 ```
-
-Чем выше similarity, тем ближе содержание chunk к пользовательскому вопросу.
 
 ---
 
-# Почему поиск выполняется по всем chunks
+# Top-K до фильтрации
 
-Индекс учебный и относительно небольшой.
-
-Поэтому можно выполнить:
+На Дне 22 сразу выбирались:
 
 ```text
-Query
-  ↓
-compare with chunk 1
-compare with chunk 2
-compare with chunk 3
-...
-compare with chunk N
+Top-4
 ```
 
-После этого результаты сортируются.
-
-Для небольшого локального корпуса этого достаточно.
-
-Для больших баз обычно применяются специализированные vector indexes и vector databases.
-
----
-
-# TOP-K
-
-После расчёта similarity выбираются наиболее релевантные chunks.
-
-В проекте:
+На Дне 23 поиск сначала выполняется шире:
 
 ```python
-TOP_K = 4
+TOP_K_BEFORE_FILTER = 8
 ```
 
-То есть:
+Получаем набор кандидатов:
 
 ```text
-All Chunks
-    ↓
-Similarity
-    ↓
-Sorting
-    ↓
-Top 4
+Vector Search
+
+      ↓
+
+Candidate 1
+Candidate 2
+Candidate 3
+Candidate 4
+Candidate 5
+Candidate 6
+Candidate 7
+Candidate 8
 ```
 
-Именно эти четыре chunks передаются модели как дополнительный контекст.
+Это ещё не означает, что все восемь результатов достаточно релевантны.
 
 ---
 
-# Вывод найденных источников
+# Почему Top-K недостаточно
 
-Перед RAG-ответом программа показывает найденные chunks.
+Допустим пользователь задаёт вопрос, которого вообще нет в нашей базе.
 
 Например:
 
 ```text
-============================================================
-НАЙДЕННЫЕ CHUNKS
-============================================================
-
-1. rag_notes.md
-   Section: Retrieval
-   Chunk ID: rag_notes.md::structured::0004
-   Similarity: ...
-
-2. chunking_comparison.md
-   Section: Purpose
-   Chunk ID: ...
-   Similarity: ...
+Как приготовить борщ?
 ```
 
-Это позволяет отдельно проверить качество retrieval.
+Vector search всё равно способен отсортировать документы.
+
+Предположим:
+
+```text
+Chunk A → 0.31
+Chunk B → 0.28
+Chunk C → 0.24
+Chunk D → 0.21
+```
+
+Это четыре лучших результата.
+
+Но:
+
+```text
+best result
+```
+
+не обязательно означает:
+
+```text
+relevant result
+```
+
+Все результаты могут быть нерелевантными.
 
 ---
 
-# Metadata
+# Similarity Filter
 
-Для каждого найденного chunk доступны:
-
-```text
-source
-title
-section
-chunk_id
-strategy
-```
-
-Это позволяет понять:
-
-```text
-откуда пришла информация
-```
-
-ещё до генерации ответа LLM.
-
----
-
-# Построение Context
+Для решения этой проблемы добавлен второй retrieval stage.
 
 Функция:
 
 ```python
-build_context()
+filter_chunks()
 ```
 
-объединяет найденные chunks.
-
-Каждый источник передаётся примерно в таком формате:
+оставляет только chunks:
 
 ```text
---- SOURCE 1 ---
+score >= SIMILARITY_THRESHOLD
+```
 
-File:
-rag_notes.md
+Текущая настройка:
 
-Section:
-Retrieval
+```python
+SIMILARITY_THRESHOLD = 0.45
+```
 
-Chunk ID:
-rag_notes.md::structured::0004
+Концептуально:
 
-Text:
+```text
+TOP-8
+
+0.82  ───── PASS
+0.79  ───── PASS
+0.73  ───── PASS
+0.69  ───── PASS
+0.54  ───── PASS
+0.41  ───── REMOVE
+0.35  ───── REMOVE
+0.29  ───── REMOVE
+```
+
+После этого применяется:
+
+```python
+TOP_K_AFTER_FILTER = 4
+```
+
+---
+
+# Top-K после фильтрации
+
+Таким образом используются две разные настройки.
+
+## До фильтра
+
+```python
+TOP_K_BEFORE_FILTER = 8
+```
+
+означает:
+
+```text
+Сколько кандидатов рассмотреть?
+```
+
+## После фильтра
+
+```python
+TOP_K_AFTER_FILTER = 4
+```
+
+означает:
+
+```text
+Сколько максимум chunks
+передать в LLM?
+```
+
+Pipeline:
+
+```text
+All Chunks
+     ↓
+Similarity Search
+     ↓
+Top-8 Candidates
+     ↓
+Threshold
+     ↓
+Relevant Candidates
+     ↓
+Top-4 Maximum
+     ↓
+LLM Context
+```
+
+---
+
+# Почему не передавать все найденные chunks
+
+Больше context не всегда означает лучше.
+
+Нерелевантные chunks могут:
+
+```text
+увеличивать prompt
+создавать шум
+отвлекать модель
+повышать стоимость
+ухудшать grounded answer
+```
+
+Поэтому задача retrieval:
+
+```text
+не найти как можно больше текста
+```
+
+а:
+
+```text
+найти достаточно релевантного текста
+```
+
+---
+
+# Что происходит, если ничего не найдено
+
+Если ни один candidate не проходит threshold:
+
+```text
+Candidates
+    ↓
+Similarity Filter
+    ↓
+0 chunks
+```
+
+система не передаёт случайный context в LLM.
+
+Вместо этого возвращается сообщение:
+
+```text
+В локальной базе не найдено
+достаточно релевантной информации
+для ответа.
+```
+
+Это важное отличие от простого Top-K retrieval.
+
+---
+
+# Baseline vs Improved
+
+Проект позволяет сравнить оба подхода на одном вопросе.
+
+```text
+                     QUESTION
+                         │
+             ┌───────────┴───────────┐
+             ↓                       ↓
+         BASELINE                 IMPROVED
+             ↓                       ↓
+      Original Query             Rewrite
+             ↓                       ↓
+         Embedding                Embedding
+             ↓                       ↓
+          Top-4                   Top-8
+             │                       ↓
+             │                    Filter
+             │                       ↓
+             │                 Top-4 Maximum
+             ↓                       ↓
+          Context                 Context
+             ↓                       ↓
+            LLM                     LLM
+             ↓                       ↓
+          Answer                  Answer
+```
+
+---
+
+# Baseline Retrieval
+
+Функция:
+
+```python
+run_baseline_rag()
+```
+
+выполняет:
+
+```text
+Original Question
+        ↓
+search_chunks()
+        ↓
+Top-4
+        ↓
+answer_with_context()
+```
+
+Этот режим используется как контрольная версия.
+
+---
+
+# Improved Retrieval
+
+Функция:
+
+```python
+run_improved_rag()
+```
+
+выполняет:
+
+```text
+Question
+    ↓
+rewrite_query()
+    ↓
+search_chunks()
+    ↓
+Top-8
+    ↓
+filter_chunks()
+    ↓
+Top-4
+    ↓
+answer_with_context()
+```
+
+---
+
+# Отладочный вывод
+
+Программа специально показывает retrieval pipeline.
+
+Сначала:
+
+```text
+QUERY REWRITE
+
+Original:
+...
+
+Rewritten:
 ...
 ```
 
-После этого несколько источников объединяются:
+После этого:
 
 ```text
-SOURCE 1
-
-SOURCE 2
-
-SOURCE 3
-
-SOURCE 4
+BEFORE FILTER (TOP-8)
 ```
+
+Для каждого chunk выводятся:
+
+```text
+File
+Section
+Chunk ID
+Similarity
+```
+
+Затем:
+
+```text
+AFTER FILTER
+```
+
+показывает только chunks, прошедшие threshold.
 
 ---
 
-# RAG Prompt
+# Итоговая статистика
 
-После retrieval модель получает:
-
-```text
-Instructions
-+
-Retrieved Context
-+
-User Question
-```
-
-То есть:
+После выполнения программа выводит:
 
 ```text
-CONTEXT:
-
-[chunk 1]
-
-[chunk 2]
-
-[chunk 3]
-
-[chunk 4]
-
-
-QUESTION:
-
-вопрос пользователя
+Baseline chunks
+Candidates before filter
+Chunks after filter
+Removed by filter
 ```
 
-Модели дополнительно указывается:
+Например концептуально:
 
 ```text
-использовать информацию из context
+Baseline chunks: 4
+Candidates before filter: 8
+Chunks after filter: 4
+Removed by filter: 4
 ```
 
-и:
-
-```text
-не придумывать отсутствующие в документах факты
-```
-
-Если информации недостаточно, модель должна сообщить об этом.
+Конкретные значения зависят от вопроса и similarity scores.
 
 ---
 
-# Полный RAG Flow
+# Контрольные вопросы
 
-```text
-USER QUESTION
-      ↓
-create_query_embedding()
-      ↓
-QUERY VECTOR
-      ↓
-search_chunks()
-      ↓
-COSINE SIMILARITY
-      ↓
-SORT
-      ↓
-TOP-4 CHUNKS
-      ↓
-build_context()
-      ↓
-CONTEXT + QUESTION
-      ↓
-ask_with_rag()
-      ↓
-GEMINI
-      ↓
-RAG ANSWER
-```
-
----
-
-# Сравнение WITH RAG / WITHOUT RAG
-
-Один вопрос проходит через два независимых режима.
-
-```text
-                     ┌───────────────────┐
-                     │     QUESTION      │
-                     └─────────┬─────────┘
-                               │
-                  ┌────────────┴────────────┐
-                  ↓                         ↓
-            WITHOUT RAG                 WITH RAG
-                  ↓                         ↓
-                Gemini               Query Embedding
-                  ↓                         ↓
-               Answer                 Local Index
-                                            ↓
-                                       Retrieval
-                                            ↓
-                                        Top-K
-                                            ↓
-                                     Context + Question
-                                            ↓
-                                          Gemini
-                                            ↓
-                                         Answer
-```
-
-Это позволяет сравнить обычный ответ модели с ответом, основанным на локальной базе документов.
-
----
-
-# Почему RAG не означает автоматически лучший ответ
-
-Обычная модель уже может хорошо отвечать на общеизвестные вопросы.
-
-Например:
-
-```text
-Что такое embeddings?
-```
-
-может получить хороший ответ и без RAG.
-
-Основная ценность RAG проявляется, когда вопрос относится к конкретной локальной базе:
-
-```text
-Какие metadata сохраняются
-для каждого chunk в нашем проекте?
-```
-
-Без RAG модель знает общую концепцию metadata.
-
-Но она не обязана знать конкретную структуру нашего проекта.
-
-RAG позволяет найти именно локальные данные:
-
-```text
-source
-title
-section
-chunk_id
-strategy
-```
-
----
-
-# Контрольный набор
-
-Для проверки создан файл:
+Сохраняется набор из 10 вопросов Дня 22:
 
 ```text
 control_questions.json
 ```
 
-Он содержит 10 контрольных вопросов.
-
-Каждый тест содержит:
+Для каждого вопроса определены:
 
 ```text
 question
@@ -721,417 +718,304 @@ expected
 expected_sources
 ```
 
----
-
-# Структура контрольного теста
-
-Например:
-
-```json
-{
-  "id": 1,
-  "question": "Какие metadata сохраняются для каждого chunk?",
-  "expected": "В ответе должны быть source, title, section, chunk_id и strategy.",
-  "expected_sources": [
-    "README.md",
-    "chunking_comparison.md"
-  ]
-}
-```
-
-Таким образом для каждого вопроса заранее известно:
+Это позволяет использовать одинаковый набор для сравнения разных версий retrieval.
 
 ```text
-что ожидается в ответе
-```
-
-и:
-
-```text
-какие документы желательно найти
+Same Questions
+      ↓
+Baseline Retrieval
+      VS
+Improved Retrieval
 ```
 
 ---
 
-# 10 контрольных вопросов
+# Проверка релевантного вопроса
 
-Контрольный набор проверяет несколько областей локальной базы.
-
-## 1. Chunk Metadata
+Пример:
 
 ```text
-Какие metadata сохраняются для каждого chunk?
+А зачем мы вообще делали overlap,
+когда разбивали документы?
 ```
 
-Ожидается:
+Этот тест полезен для Query Rewrite, потому что вопрос сформулирован разговорно.
+
+Сравниваются:
 
 ```text
-source
-title
-section
-chunk_id
-strategy
-```
+Baseline:
+Original Query → Top-4
 
-Источники:
-
-```text
-README.md
-chunking_comparison.md
-```
-
----
-
-## 2. Fixed Chunking
-
-```text
-В чем недостаток fixed-size chunking?
-```
-
-Ожидается объяснение того, что фиксированная граница может разрывать логические единицы текста.
-
-Источники:
-
-```text
-README.md
-chunking_comparison.md
+Improved:
+Original Query
+→ Rewrite
+→ Top-8
+→ Filter
+→ Top-4
 ```
 
 ---
 
-## 3. Chunk Overlap
+# Проверка RAG knowledge
 
-```text
-Зачем используется overlap между chunks?
-```
-
-Ожидается объяснение сохранения контекста на границах.
-
-Источники:
-
-```text
-rag_notes.md
-chunking_comparison.md
-```
-
----
-
-## 4. RAG Ingestion
-
-```text
-Что происходит на этапе ingestion в RAG?
-```
-
-Ожидается:
-
-```text
-loading
-normalization
-chunking
-embeddings
-indexing
-```
-
-Источник:
-
-```text
-rag_notes.md
-```
-
----
-
-## 5. MCP Orchestration
-
-```text
-Какую роль выполняет orchestrator
-при работе с несколькими MCP-серверами?
-```
-
-Источники:
-
-```text
-mcp_notes.md
-agent_design.txt
-```
-
----
-
-## 6. Agent Memory
-
-```text
-Чем working memory отличается
-от long-term memory агента?
-```
-
-Источник:
-
-```text
-agent_design.txt
-```
-
----
-
-## 7. Android MVVM
-
-```text
-Какую роль ViewModel выполняет в MVVM?
-```
-
-Источник:
-
-```text
-android_architecture.md
-```
-
----
-
-## 8. JSON Index
-
-```text
-Почему JSON удобен
-для учебного локального индекса?
-```
-
-Источники:
-
-```text
-README.md
-software_architecture.md
-```
-
----
-
-## 9. Structured Chunk Size
-
-```text
-Почему structured chunking
-всё равно должен ограничивать
-максимальный размер chunk?
-```
-
-Источник:
-
-```text
-chunking_comparison.md
-```
-
----
-
-## 10. RAG Failure Modes
+Другой вопрос:
 
 ```text
 Какие проблемы могут ухудшить качество RAG?
 ```
 
-Источник:
+В локальной базе ожидается информация из:
 
 ```text
 rag_notes.md
 ```
 
----
+в частности из раздела о failure modes.
 
-# Зачем нужен контрольный набор
-
-Без заранее подготовленных вопросов легко оценивать систему субъективно:
+По результатам retrieval можно проверить:
 
 ```text
-"Ответ выглядит нормально"
-```
-
-Контрольный набор добавляет критерии:
-
-```text
-Question
-    ↓
-Expected Content
-    ↓
-Expected Sources
-```
-
-Теперь можно отдельно проверять:
-
-```text
-Retrieval Quality
+нашёл ли pipeline нужный документ
 ```
 
 и:
 
 ```text
-Answer Quality
+остался ли он после фильтрации
 ```
 
 ---
 
-# Retrieval Quality
+# Проверка нерелевантного вопроса
 
-Если вопрос:
-
-```text
-Зачем используется overlap между chunks?
-```
-
-ожидаемые документы:
+Особенно важный тест:
 
 ```text
-rag_notes.md
-chunking_comparison.md
+Как приготовить борщ?
 ```
 
-Если retrieval действительно возвращает эти документы среди наиболее релевантных chunks, поиск работает ожидаемо.
+Локальная база посвящена:
 
-Если вместо них появляются только нерелевантные документы, проблема находится на retrieval-этапе.
+```text
+RAG
+MCP
+AI Agents
+Android
+Python
+Software Architecture
+Chunking
+Embeddings
+```
+
+и не предназначена для рецептов.
+
+Baseline Top-K всё равно способен вернуть несколько математически наиболее близких chunks.
+
+Improved pipeline добавляет:
+
+```text
+Similarity Threshold
+```
+
+и может удалить кандидатов с недостаточной релевантностью.
+
+Этот тест демонстрирует отличие:
+
+```text
+Top-K
+```
+
+от:
+
+```text
+Top-K + Relevance Filtering
+```
 
 ---
 
-# Answer Quality
+# Threshold Calibration
 
-Даже при хорошем retrieval модель ещё должна правильно использовать полученный context.
+Значение:
 
-Поэтому RAG состоит из двух разных задач:
-
-```text
-1. Найти правильную информацию.
-
-2. Сформировать правильный ответ
-   на основе этой информации.
+```python
+SIMILARITY_THRESHOLD = 0.45
 ```
 
-Хороший RAG требует работы обоих этапов.
+не считается универсальным порогом для любых embeddings и любых баз.
+
+Это экспериментальная настройка проекта.
+
+Порог необходимо оценивать по реальным данным:
+
+```text
+Relevant Questions
+        ↓
+Similarity Scores
+
+Irrelevant Questions
+        ↓
+Similarity Scores
+```
+
+После этого можно подобрать границу, которая лучше разделяет:
+
+```text
+relevant
+```
+
+и:
+
+```text
+irrelevant
+```
+
+результаты.
+
+---
+
+# Почему это не отдельный Model Reranker
+
+Задание допускает:
+
+```text
+reranker
+или
+relevance filter
+```
+
+В данной реализации выбран:
+
+```text
+Similarity-based Relevance Filter
+```
+
+Второй отдельной reranker-модели нет.
+
+Поэтому архитектуру корректнее называть:
+
+```text
+RAG with Query Rewriting
+and Similarity Filtering
+```
+
+Отдельный model reranker мог бы дополнительно получать:
+
+```text
+Query + Candidate Chunk
+```
+
+и вычислять новый relevance score.
+
+Это возможное дальнейшее улучшение.
 
 ---
 
 # Запуск
 
-Если индекс уже существует:
+Если индекс уже создан:
 
 ```powershell
 py main.py
 ```
 
-Если индекс отсутствует:
+Если индекса нет:
 
 ```powershell
 py index_documents.py
 ```
 
-а затем:
+затем:
 
 ```powershell
 py main.py
-```
-
----
-
-# Первый тест
-
-Например:
-
-```text
-Какие metadata сохраняются для каждого chunk?
-```
-
-Программа сначала показывает:
-
-```text
-БЕЗ RAG
-```
-
-затем:
-
-```text
-НАЙДЕННЫЕ CHUNKS
-```
-
-и после этого:
-
-```text
-С RAG
-```
-
----
-
-# Второй тест
-
-```text
-Почему structured chunking всё равно должен
-ограничивать максимальный размер chunk?
-```
-
-Ожидаемый источник:
-
-```text
-chunking_comparison.md
-```
-
----
-
-# Третий тест
-
-```text
-Какую роль выполняет orchestrator
-при работе с несколькими MCP-серверами?
-```
-
-Ожидаемые источники:
-
-```text
-mcp_notes.md
-agent_design.txt
 ```
 
 ---
 
 # Что показать на видео
 
-Удобный демонстрационный вопрос:
+## Тест 1 — релевантный разговорный запрос
 
 ```text
-Какие metadata сохраняются для каждого chunk?
+А зачем мы вообще делали overlap,
+когда разбивали документы?
 ```
 
-На одном экране можно показать:
+Показать:
 
 ```text
-1. Question
-
-2. WITHOUT RAG answer
-
-3. Retrieved Top-K chunks
-
-4. File / Section / Chunk ID / Similarity
-
-5. WITH RAG answer
+Baseline Top-4
+       ↓
+Query Rewrite
+       ↓
+Top-8 Before Filter
+       ↓
+Similarity Scores
+       ↓
+Top-4 After Filter
+       ↓
+Improved Answer
 ```
 
-После этого открыть:
+## Тест 2 — нерелевантный запрос
 
 ```text
-control_questions.json
+Как приготовить борщ?
 ```
 
-и показать:
+Показать разницу между:
 
 ```text
-question
-expected
-expected_sources
+Baseline Top-K
 ```
+
+и:
+
+```text
+Similarity Filtering
+```
+
+---
+
+# Что реализовано
+
+В проект добавлены:
+
+- Query Rewrite;
+- query embedding после rewriting;
+- расширенный candidate retrieval;
+- Top-K до фильтрации;
+- similarity threshold;
+- relevance filtering;
+- Top-K после фильтрации;
+- обработка случая без релевантных chunks;
+- baseline RAG;
+- improved RAG;
+- вывод similarity scores;
+- сравнение двух retrieval pipelines;
+- повторное использование контрольного набора из 10 вопросов.
 
 ---
 
 # Результат
 
-Реализован первый локальный RAG pipeline:
+Получен улучшенный RAG pipeline:
 
 ```text
 Question
+    ↓
+Query Rewrite
     ↓
 Embedding
     ↓
 Vector Search
     ↓
-Top-K Chunks
+Top-8 Candidates
+    ↓
+Similarity Filter
+    ↓
+Top-4 Relevant Chunks
     ↓
 Context
     ↓
@@ -1140,100 +1024,44 @@ LLM
 Answer
 ```
 
-Также реализован baseline:
+При этом сохранён baseline:
 
 ```text
 Question
     ↓
-LLM
+Embedding
     ↓
-Answer Without RAG
+Top-4
+    ↓
+LLM
 ```
 
-Благодаря этому ответы можно сравнивать.
-
----
-
-# Реализовано
-
-- загрузка локального vector index;
-- embedding пользовательского вопроса;
-- cosine similarity;
-- поиск по всем chunks;
-- сортировка по similarity;
-- Top-K retrieval;
-- вывод найденных источников;
-- metadata источников;
-- построение RAG context;
-- запрос к LLM без RAG;
-- запрос к LLM с RAG;
-- сравнение двух режимов;
-- 10 контрольных вопросов;
-- ожидаемое содержание ответов;
-- ожидаемые источники.
-
----
-
-# Итоговая архитектура
-
-```text
-                        USER
-                          ↓
-                       QUESTION
-                          ↓
-            ┌─────────────┴─────────────┐
-            │                           │
-            ↓                           ↓
-       WITHOUT RAG                   WITH RAG
-            │                           │
-            ↓                           ↓
-           LLM                    Query Embedding
-            │                           │
-            │                           ↓
-            │                      Local Index
-            │                           │
-            │                           ↓
-            │                   Cosine Similarity
-            │                           │
-            │                           ↓
-            │                        Top-K
-            │                           │
-            │                           ↓
-            │                    Retrieved Context
-            │                           │
-            │                           ↓
-            │                          LLM
-            │                           │
-            ↓                           ↓
-         ANSWER                      ANSWER
-            │                           │
-            └─────────────┬─────────────┘
-                          ↓
-                       COMPARE
-```
+Это позволяет экспериментально сравнивать качество retrieval и финальных ответов.
 
 ---
 
 # Вывод
 
-На Дне 21 была создана база для retrieval:
+На Дне 22 система научилась находить наиболее похожие chunks.
+
+На Дне 23 добавлена следующая важная идея:
 
 ```text
-Documents
-→ Chunks
-→ Embeddings
-→ Index
+Наиболее похожий результат
+не обязательно является
+достаточно релевантным результатом.
 ```
 
-На Дне 22 индекс впервые начал использоваться:
+Поэтому retrieval теперь состоит из нескольких этапов:
 
 ```text
-Question
-→ Query Embedding
-→ Similarity Search
-→ Relevant Chunks
-→ Context
-→ LLM
+Rewrite
+    ↓
+Retrieve
+    ↓
+Filter
+    ↓
+Generate
 ```
 
-Таким образом был реализован первый полный RAG-запрос и создан baseline для сравнения ответов модели с использованием локальной базы документов и без неё.
+Так RAG получает возможность не только выбирать лучшие документы, но и отбрасывать кандидатов, которые не проходят заданный порог релевантности.

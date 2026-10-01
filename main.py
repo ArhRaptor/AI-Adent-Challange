@@ -19,7 +19,14 @@ EMBEDDING_DIMENSIONS = 768
 
 LLM_MODEL = "gemini-3.5-flash-lite"
 
-TOP_K = 4
+# Baseline Day 22
+BASELINE_TOP_K = 4
+
+# Day 23
+TOP_K_BEFORE_FILTER = 8
+TOP_K_AFTER_FILTER = 4
+
+SIMILARITY_THRESHOLD = 0.45
 
 
 # ============================================================
@@ -52,16 +59,16 @@ def load_index() -> dict:
 
 
 # ============================================================
-# QUERY EMBEDDING
+# EMBEDDING
 # ============================================================
 
 def create_query_embedding(
-    question: str
+    query: str
 ) -> list[float]:
 
     result = client.models.embed_content(
         model=EMBEDDING_MODEL,
-        contents=question,
+        contents=query,
         config=types.EmbedContentConfig(
             output_dimensionality=
                 EMBEDDING_DIMENSIONS
@@ -91,8 +98,7 @@ def cosine_similarity(
 
     dot_product = sum(
         a * b
-        for a, b
-        in zip(
+        for a, b in zip(
             vector_a,
             vector_b
         )
@@ -125,18 +131,18 @@ def cosine_similarity(
 
 
 # ============================================================
-# RETRIEVAL
+# VECTOR SEARCH
 # ============================================================
 
 def search_chunks(
-    question: str,
+    query: str,
     index: dict,
-    top_k: int = TOP_K
+    top_k: int
 ) -> list[dict]:
 
     query_embedding = (
         create_query_embedding(
-            question
+            query
         )
     )
 
@@ -168,18 +174,28 @@ def search_chunks(
 
 
 # ============================================================
-# WITHOUT RAG
+# QUERY REWRITE
 # ============================================================
 
-def ask_without_rag(
+def rewrite_query(
     question: str
 ) -> str:
 
     prompt = f"""
-Ответь на вопрос пользователя.
+Перепиши вопрос пользователя
+в короткий поисковый запрос
+для semantic search по технической
+базе документов.
 
-Не используй локальную базу документов.
-Ответь только на основе собственных знаний.
+Правила:
+
+- сохрани исходный смысл;
+- не отвечай на вопрос;
+- не добавляй новые факты;
+- убери разговорные слова;
+- добавь только термины,
+  явно следующие из вопроса;
+- верни только поисковый запрос.
 
 Вопрос:
 
@@ -201,7 +217,34 @@ def ask_without_rag(
         )
     )
 
-    return response.text
+    rewritten = (
+        response.text or ""
+    ).strip()
+
+    # Безопасный fallback.
+    if not rewritten:
+        return question
+
+    return rewritten
+
+
+# ============================================================
+# FILTER
+# ============================================================
+
+def filter_chunks(
+    chunks: list[dict],
+    threshold: float,
+    top_k: int
+) -> list[dict]:
+
+    relevant = [
+        chunk
+        for chunk in chunks
+        if chunk["score"] >= threshold
+    ]
+
+    return relevant[:top_k]
 
 
 # ============================================================
@@ -219,11 +262,10 @@ def build_context(
         start=1
     ):
 
-        metadata = (
-            chunk["metadata"]
-        )
+        metadata = chunk["metadata"]
 
-        part = f"""
+        parts.append(
+            f"""
 --- SOURCE {number} ---
 
 File:
@@ -235,40 +277,47 @@ Section:
 Chunk ID:
 {metadata.get("chunk_id")}
 
+Similarity:
+{chunk["score"]:.4f}
+
 Text:
 {chunk["text"]}
 """.strip()
-
-        parts.append(part)
+        )
 
     return "\n\n".join(parts)
 
 
 # ============================================================
-# WITH RAG
+# ANSWER
 # ============================================================
 
-def ask_with_rag(
+def answer_with_context(
     question: str,
     chunks: list[dict]
 ) -> str:
+
+    if not chunks:
+
+        return (
+            "В локальной базе не найдено "
+            "достаточно релевантной информации "
+            "для ответа."
+        )
 
     context = build_context(
         chunks
     )
 
     prompt = f"""
-Ты отвечаешь на вопрос,
-используя локальную базу документов.
+Ответь на QUESTION,
+используя только информацию
+из CONTEXT.
 
-Используй только информацию,
-которая содержится в CONTEXT.
+Не придумывай отсутствующие факты.
 
-Если в CONTEXT недостаточно информации,
+Если CONTEXT недостаточно,
 прямо скажи об этом.
-
-Не придумывай факты,
-которых нет в переданных документах.
 
 CONTEXT:
 
@@ -300,26 +349,34 @@ ANSWER:
 
 
 # ============================================================
-# PRINT SOURCES
+# PRINT CHUNKS
 # ============================================================
 
-def print_sources(
+def print_chunks(
+    title: str,
     chunks: list[dict]
 ):
 
     print()
     print("=" * 60)
-    print("НАЙДЕННЫЕ CHUNKS")
+    print(title)
     print("=" * 60)
+
+    if not chunks:
+
+        print()
+        print(
+            "Релевантные chunks "
+            "не найдены."
+        )
+        return
 
     for number, chunk in enumerate(
         chunks,
         start=1
     ):
 
-        metadata = (
-            chunk["metadata"]
-        )
+        metadata = chunk["metadata"]
 
         print()
 
@@ -345,6 +402,125 @@ def print_sources(
 
 
 # ============================================================
+# BASELINE RAG — DAY 22
+# ============================================================
+
+def run_baseline_rag(
+    question: str,
+    index: dict
+):
+
+    chunks = search_chunks(
+        query=question,
+        index=index,
+        top_k=BASELINE_TOP_K
+    )
+
+    print_chunks(
+        "BASELINE — TOP CHUNKS",
+        chunks
+    )
+
+    answer = answer_with_context(
+        question,
+        chunks
+    )
+
+    return answer, chunks
+
+
+# ============================================================
+# IMPROVED RAG — DAY 23
+# ============================================================
+
+def run_improved_rag(
+    question: str,
+    index: dict
+):
+
+    # --------------------------------------------------------
+    # STEP 1 — QUERY REWRITE
+    # --------------------------------------------------------
+
+    rewritten_query = (
+        rewrite_query(
+            question
+        )
+    )
+
+    print()
+    print("=" * 60)
+    print("QUERY REWRITE")
+    print("=" * 60)
+
+    print()
+    print(
+        f"Original:\n"
+        f"{question}"
+    )
+
+    print()
+    print(
+        f"Rewritten:\n"
+        f"{rewritten_query}"
+    )
+
+    # --------------------------------------------------------
+    # STEP 2 — RETRIEVAL
+    # --------------------------------------------------------
+
+    candidates = search_chunks(
+        query=rewritten_query,
+        index=index,
+        top_k=
+            TOP_K_BEFORE_FILTER
+    )
+
+    print_chunks(
+        f"BEFORE FILTER "
+        f"(TOP-{TOP_K_BEFORE_FILTER})",
+        candidates
+    )
+
+    # --------------------------------------------------------
+    # STEP 3 — FILTER
+    # --------------------------------------------------------
+
+    filtered = filter_chunks(
+        chunks=candidates,
+        threshold=
+            SIMILARITY_THRESHOLD,
+        top_k=
+            TOP_K_AFTER_FILTER
+    )
+
+    print_chunks(
+        f"AFTER FILTER "
+        f"(threshold="
+        f"{SIMILARITY_THRESHOLD}, "
+        f"max TOP-"
+        f"{TOP_K_AFTER_FILTER})",
+        filtered
+    )
+
+    # --------------------------------------------------------
+    # STEP 4 — ANSWER
+    # --------------------------------------------------------
+
+    answer = answer_with_context(
+        question,
+        filtered
+    )
+
+    return (
+        answer,
+        rewritten_query,
+        candidates,
+        filtered
+    )
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -352,7 +528,8 @@ def main():
 
     print("=" * 60)
     print(
-        "ДЕНЬ 22 — ПЕРВЫЙ RAG-ЗАПРОС"
+        "ДЕНЬ 23 — RERANKING "
+        "И ФИЛЬТРАЦИЯ"
     )
     print("=" * 60)
 
@@ -374,9 +551,24 @@ def main():
         f"{len(index['chunks'])}"
     )
 
+    print()
     print(
-        f"Embedding model: "
-        f"{index['embedding_model']}"
+        "Настройки Day 23:"
+    )
+
+    print(
+        f"TOP-K before filter: "
+        f"{TOP_K_BEFORE_FILTER}"
+    )
+
+    print(
+        f"Similarity threshold: "
+        f"{SIMILARITY_THRESHOLD}"
+    )
+
+    print(
+        f"TOP-K after filter: "
+        f"{TOP_K_AFTER_FILTER}"
     )
 
     print()
@@ -388,68 +580,101 @@ def main():
     if not question:
         return
 
-    # --------------------------------------------------------
-    # WITHOUT RAG
-    # --------------------------------------------------------
+    # ========================================================
+    # BASELINE
+    # ========================================================
 
     print()
-    print("=" * 60)
-    print("БЕЗ RAG")
-    print("=" * 60)
+    print("#" * 60)
+    print("MODE 1 — BASELINE RAG")
+    print("#" * 60)
 
-    answer_without_rag = (
-        ask_without_rag(
-            question
+    baseline_answer, baseline_chunks = (
+        run_baseline_rag(
+            question,
+            index
         )
     )
 
     print()
+    print("=" * 60)
+    print("BASELINE ANSWER")
+    print("=" * 60)
+
+    print()
     print(
-        answer_without_rag
+        baseline_answer
     )
 
-    # --------------------------------------------------------
-    # RETRIEVAL
-    # --------------------------------------------------------
+    # ========================================================
+    # IMPROVED
+    # ========================================================
 
-    chunks = search_chunks(
+    print()
+    print("#" * 60)
+    print("MODE 2 — IMPROVED RAG")
+    print("#" * 60)
+
+    (
+        improved_answer,
+        rewritten_query,
+        candidates,
+        filtered_chunks
+    ) = run_improved_rag(
         question,
         index
     )
 
-    print_sources(
-        chunks
+    print()
+    print("=" * 60)
+    print("IMPROVED ANSWER")
+    print("=" * 60)
+
+    print()
+    print(
+        improved_answer
     )
 
-    # --------------------------------------------------------
-    # WITH RAG
-    # --------------------------------------------------------
+    # ========================================================
+    # COMPARISON
+    # ========================================================
 
     print()
     print("=" * 60)
-    print("С RAG")
+    print("СРАВНЕНИЕ")
     print("=" * 60)
 
-    answer_with_rag = (
-        ask_with_rag(
-            question,
-            chunks
-        )
+    print()
+
+    print(
+        f"Baseline chunks: "
+        f"{len(baseline_chunks)}"
+    )
+
+    print(
+        f"Candidates before filter: "
+        f"{len(candidates)}"
+    )
+
+    print(
+        f"Chunks after filter: "
+        f"{len(filtered_chunks)}"
+    )
+
+    removed = (
+        len(candidates)
+        - len(filtered_chunks)
+    )
+
+    print(
+        f"Removed by filter: "
+        f"{removed}"
     )
 
     print()
     print(
-        answer_with_rag
+        "Day 23 completed."
     )
-
-    # --------------------------------------------------------
-    # DONE
-    # --------------------------------------------------------
-
-    print()
-    print("=" * 60)
-    print("СРАВНЕНИЕ ЗАВЕРШЕНО")
-    print("=" * 60)
 
 
 if __name__ == "__main__":
