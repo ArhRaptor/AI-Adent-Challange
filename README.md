@@ -1,56 +1,44 @@
-# День 23 — Реранкинг и фильтрация RAG
+# День 24 — Цитаты, источники и анти-галлюцинации
 
 ## Цель
 
-Улучшить RAG pipeline, созданный на Дне 22.
+Доработать RAG-систему так, чтобы каждый содержательный ответ был проверяемым.
 
-Простой Top-K retrieval всегда возвращает некоторое количество chunks, даже если пользовательский вопрос вообще не относится к локальной базе.
-
-На Дне 23 добавлены:
+Теперь система должна возвращать:
 
 ```text
-Query Rewrite
-+
-расширенный поиск кандидатов
-+
-Similarity Filter
-+
-Top-K после фильтрации
-```
-
-Теперь pipeline выглядит так:
-
-```text
-Question
-    ↓
-Query Rewrite
-    ↓
-Query Embedding
-    ↓
-Vector Search
-    ↓
-Top-K Candidates
-    ↓
-Similarity Filter
-    ↓
-Filtered Top-K
-    ↓
-Context
-    ↓
-LLM
-    ↓
 Answer
++
+Sources
++
+Quotes
 ```
 
-Дополнительно сохранён baseline RAG из Дня 22, чтобы сравнивать оба режима на одинаковых вопросах.
+При этом источники и цитаты не просто запрашиваются у LLM — они дополнительно проверяются программно.
+
+Также добавлен режим отказа от ответа:
+
+```text
+низкая релевантность
+        ↓
+"Не знаю"
+        ↓
+просьба уточнить вопрос
+```
+
+Главная задача Дня 24:
+
+```text
+не просто получить ответ,
+а показать, на каких данных
+этот ответ основан
+```
 
 ---
 
-# Развитие проекта
+# Развитие RAG
 
-## День 21
-
-Был создан локальный индекс:
+## День 21 — Indexing
 
 ```text
 Documents
@@ -64,16 +52,14 @@ Metadata
 Local Index
 ```
 
-## День 22
-
-Появился первый RAG:
+## День 22 — First RAG
 
 ```text
 Question
     ↓
 Embedding
     ↓
-Similarity Search
+Retrieval
     ↓
 Top-K
     ↓
@@ -82,24 +68,40 @@ Context
 LLM
 ```
 
-## День 23
-
-Retrieval становится двухэтапным:
+## День 23 — Improved Retrieval
 
 ```text
 Question
     ↓
-Rewrite
+Query Rewrite
     ↓
-Retrieval
+Top-K Candidates
     ↓
-Candidates
-    ↓
-Filter
+Similarity Filter
     ↓
 Relevant Chunks
     ↓
 LLM
+```
+
+## День 24 — Grounded RAG
+
+```text
+Question
+    ↓
+Query Rewrite
+    ↓
+Retrieval
+    ↓
+Similarity Filter
+    ↓
+Relevance Gate
+    ↓
+Grounded Generation
+    ↓
+Sources + Quotes
+    ↓
+Validation
 ```
 
 ---
@@ -133,73 +135,52 @@ LLM
 
 ---
 
-# Два режима RAG
-
-Для сравнения реализованы два независимых режима.
-
-## Mode 1 — Baseline RAG
-
-Baseline соответствует подходу Дня 22:
+# Полная архитектура Day 24
 
 ```text
-Original Question
-        ↓
-Query Embedding
-        ↓
-Vector Search
-        ↓
-Top-4
-        ↓
-Context
-        ↓
-LLM
+                         USER
+                           ↓
+                        QUESTION
+                           ↓
+                     Query Rewrite
+                           ↓
+                     Query Embedding
+                           ↓
+                      Local Index
+                           ↓
+                    Vector Retrieval
+                           ↓
+                    Top-8 Candidates
+                           ↓
+                   Similarity Filter
+                           ↓
+                      Top-4 max
+                           ↓
+                    Relevance Gate
+                           │
+                 ┌─────────┴─────────┐
+                 ↓                   ↓
+             relevant            insufficient
+                 ↓                   ↓
+         Build Context          "Не знаю"
+                 ↓                   ↓
+                LLM          Ask for clarification
+                 ↓
+         Structured JSON
+                 ↓
+      ┌──────────┼──────────┐
+      ↓          ↓          ↓
+    Answer    Sources     Quotes
+      └──────────┼──────────┘
+                 ↓
+             Validation
 ```
-
-Настройка:
-
-```python
-BASELINE_TOP_K = 4
-```
-
-Здесь отсутствуют:
-
-```text
-Query Rewrite
-Similarity Threshold
-Filtering
-```
-
-Поэтому поиск всегда возвращает четыре наиболее похожих chunk, даже если их абсолютная релевантность низкая.
 
 ---
 
-# Mode 2 — Improved RAG
+# Настройки Retrieval
 
-Улучшенный pipeline:
-
-```text
-Original Question
-        ↓
-Query Rewrite
-        ↓
-Rewritten Query
-        ↓
-Query Embedding
-        ↓
-Vector Search
-        ↓
-Top-8 Candidates
-        ↓
-Similarity Filter
-        ↓
-Maximum Top-4
-        ↓
-Context
-        ↓
-LLM
-```
-
-Основные настройки:
+В проекте используются:
 
 ```python
 TOP_K_BEFORE_FILTER = 8
@@ -208,24 +189,31 @@ TOP_K_AFTER_FILTER = 4
 SIMILARITY_THRESHOLD = 0.45
 ```
 
-`0.45` используется как экспериментальный стартовый порог и может корректироваться по реальным similarity scores конкретного индекса.
+Сначала система получает до восьми кандидатов:
+
+```text
+Vector Search
+     ↓
+Top-8
+```
+
+После этого применяется threshold:
+
+```text
+score >= 0.45
+```
+
+И только после фильтра выбирается максимум:
+
+```text
+Top-4
+```
 
 ---
 
 # Query Rewrite
 
-Пользователь не всегда формулирует вопрос как хороший поисковый запрос.
-
-Например:
-
-```text
-А зачем мы вообще делали этот overlap,
-когда документы резали?
-```
-
-Для человека смысл понятен.
-
-Но semantic retrieval может получить более концентрированный запрос после rewriting.
+Пользовательский вопрос сначала преобразуется в более подходящую формулировку для semantic search.
 
 Функция:
 
@@ -233,90 +221,48 @@ SIMILARITY_THRESHOLD = 0.45
 rewrite_query()
 ```
 
-использует LLM для преобразования пользовательского вопроса в поисковую формулировку.
-
 Pipeline:
 
 ```text
-Natural Language Question
-          ↓
-         LLM
-          ↓
-Search-oriented Query
+Original Question
+       ↓
+      LLM
+       ↓
+Rewritten Search Query
 ```
 
----
+Rewrite используется только для поиска.
 
-# Правила Query Rewrite
-
-Модель получает ограничения:
-
-```text
-сохранить исходный смысл
-не отвечать на вопрос
-не добавлять новые факты
-убрать разговорные слова
-вернуть только поисковый запрос
-```
-
-Таким образом rewrite используется только для retrieval.
-
-Исходный вопрос пользователя при этом сохраняется.
-
-Именно оригинальный вопрос позже передаётся модели для формирования финального ответа.
-
----
-
-# Почему это важно
-
-Query Rewrite изменяет:
-
-```text
-что мы ищем
-```
-
-но не должен изменять:
-
-```text
-на какой вопрос отвечает пользователь
-```
-
-То есть:
+Для генерации финального ответа сохраняется оригинальный вопрос пользователя.
 
 ```text
 Original Question
       │
-      ├────→ используется для final answer
+      ├──────────────→ Final Answer
       │
       ↓
 Query Rewrite
       ↓
-используется для retrieval
+Retrieval
 ```
 
 ---
 
-# Vector Search
+# Retrieval
 
-После rewriting создаётся embedding поискового запроса.
-
-```text
-Rewritten Query
-       ↓
-Embedding Model
-       ↓
-Query Vector
-```
-
-Он сравнивается с embeddings chunks локального индекса.
-
-Для сравнения используется:
+После rewriting создаётся query embedding.
 
 ```text
-Cosine Similarity
+Query
+  ↓
+Embedding
+  ↓
+Vector
 ```
 
-Формула:
+Затем embedding вопроса сравнивается с embeddings chunks локального индекса.
+
+Используется cosine similarity:
 
 ```text
                  A · B
@@ -333,68 +279,14 @@ B = chunk embedding
 
 ---
 
-# Top-K до фильтрации
+# Similarity Filtering
 
-На Дне 22 сразу выбирались:
-
-```text
-Top-4
-```
-
-На Дне 23 поиск сначала выполняется шире:
-
-```python
-TOP_K_BEFORE_FILTER = 8
-```
-
-Получаем набор кандидатов:
-
-```text
-Vector Search
-
-      ↓
-
-Candidate 1
-Candidate 2
-Candidate 3
-Candidate 4
-Candidate 5
-Candidate 6
-Candidate 7
-Candidate 8
-```
-
-Это ещё не означает, что все восемь результатов достаточно релевантны.
-
----
-
-# Почему Top-K недостаточно
-
-Допустим пользователь задаёт вопрос, которого вообще нет в нашей базе.
-
-Например:
-
-```text
-Как приготовить борщ?
-```
-
-Vector search всё равно способен отсортировать документы.
-
-Предположим:
-
-```text
-Chunk A → 0.31
-Chunk B → 0.28
-Chunk C → 0.24
-Chunk D → 0.21
-```
-
-Это четыре лучших результата.
+Простой Top-K всегда способен вернуть несколько результатов.
 
 Но:
 
 ```text
-best result
+best available result
 ```
 
 не обязательно означает:
@@ -403,314 +295,488 @@ best result
 relevant result
 ```
 
-Все результаты могут быть нерелевантными.
-
----
-
-# Similarity Filter
-
-Для решения этой проблемы добавлен второй retrieval stage.
-
-Функция:
+Поэтому после retrieval применяется:
 
 ```python
 filter_chunks()
 ```
 
-оставляет только chunks:
+Chunk остаётся только если:
 
 ```text
-score >= SIMILARITY_THRESHOLD
-```
-
-Текущая настройка:
-
-```python
-SIMILARITY_THRESHOLD = 0.45
-```
-
-Концептуально:
-
-```text
-TOP-8
-
-0.82  ───── PASS
-0.79  ───── PASS
-0.73  ───── PASS
-0.69  ───── PASS
-0.54  ───── PASS
-0.41  ───── REMOVE
-0.35  ───── REMOVE
-0.29  ───── REMOVE
-```
-
-После этого применяется:
-
-```python
-TOP_K_AFTER_FILTER = 4
+similarity >= threshold
 ```
 
 ---
 
-# Top-K после фильтрации
+# Relevance Gate
 
-Таким образом используются две разные настройки.
-
-## До фильтра
+После filtering выполняется дополнительная проверка:
 
 ```python
-TOP_K_BEFORE_FILTER = 8
+should_abstain()
 ```
 
-означает:
+Она решает:
 
 ```text
-Сколько кандидатов рассмотреть?
+можно ли вообще отвечать
 ```
 
-## После фильтра
-
-```python
-TOP_K_AFTER_FILTER = 4
-```
-
-означает:
+Архитектура:
 
 ```text
-Сколько максимум chunks
-передать в LLM?
-```
-
-Pipeline:
-
-```text
-All Chunks
-     ↓
-Similarity Search
-     ↓
-Top-8 Candidates
-     ↓
-Threshold
-     ↓
-Relevant Candidates
-     ↓
-Top-4 Maximum
-     ↓
-LLM Context
+Filtered Chunks
+       ↓
+Relevance Gate
+       │
+   ┌───┴───┐
+   ↓       ↓
+ strong   weak
+   ↓       ↓
+  LLM   "Не знаю"
 ```
 
 ---
 
-# Почему не передавать все найденные chunks
+# Почему Relevance Gate находится до LLM
 
-Больше context не всегда означает лучше.
-
-Нерелевантные chunks могут:
+Можно было написать в prompt:
 
 ```text
-увеличивать prompt
-создавать шум
-отвлекать модель
-повышать стоимость
-ухудшать grounded answer
+Если данных мало — скажи "не знаю".
 ```
 
-Поэтому задача retrieval:
+Но это оставляет решение за генеративной моделью.
+
+В проекте используется более строгий подход:
 
 ```text
-не найти как можно больше текста
-```
-
-а:
-
-```text
-найти достаточно релевантного текста
-```
-
----
-
-# Что происходит, если ничего не найдено
-
-Если ни один candidate не проходит threshold:
-
-```text
-Candidates
-    ↓
-Similarity Filter
-    ↓
-0 chunks
-```
-
-система не передаёт случайный context в LLM.
-
-Вместо этого возвращается сообщение:
-
-```text
-В локальной базе не найдено
-достаточно релевантной информации
-для ответа.
-```
-
-Это важное отличие от простого Top-K retrieval.
-
----
-
-# Baseline vs Improved
-
-Проект позволяет сравнить оба подхода на одном вопросе.
-
-```text
-                     QUESTION
-                         │
-             ┌───────────┴───────────┐
-             ↓                       ↓
-         BASELINE                 IMPROVED
-             ↓                       ↓
-      Original Query             Rewrite
-             ↓                       ↓
-         Embedding                Embedding
-             ↓                       ↓
-          Top-4                   Top-8
-             │                       ↓
-             │                    Filter
-             │                       ↓
-             │                 Top-4 Maximum
-             ↓                       ↓
-          Context                 Context
-             ↓                       ↓
-            LLM                     LLM
-             ↓                       ↓
-          Answer                  Answer
-```
-
----
-
-# Baseline Retrieval
-
-Функция:
-
-```python
-run_baseline_rag()
-```
-
-выполняет:
-
-```text
-Original Question
+Python проверяет relevance
         ↓
-search_chunks()
+если context слабый
         ↓
-Top-4
-        ↓
-answer_with_context()
+LLM вообще не вызывается
 ```
 
-Этот режим используется как контрольная версия.
+Это уменьшает вероятность того, что модель попытается ответить на основе собственных знаний при отсутствии данных в локальной базе.
 
 ---
 
-# Improved Retrieval
+# Режим «Не знаю»
 
-Функция:
-
-```python
-run_improved_rag()
-```
-
-выполняет:
+Если подходящего контекста нет, система возвращает:
 
 ```text
-Question
-    ↓
-rewrite_query()
-    ↓
-search_chunks()
-    ↓
-Top-8
-    ↓
-filter_chunks()
-    ↓
-Top-4
-    ↓
-answer_with_context()
+Не знаю. В локальной базе недостаточно
+релевантной информации.
+Пожалуйста, уточните вопрос.
+```
+
+Структурно:
+
+```json
+{
+  "status": "unknown",
+  "answer": "Не знаю...",
+  "sources": [],
+  "quotes": []
+}
+```
+
+Пустые `sources` и `quotes` здесь являются ожидаемым поведением.
+
+Система сознательно не формирует содержательный ответ, который потребовал бы доказательств.
+
+---
+
+# Grounded Generation
+
+Если context достаточно релевантен, найденные chunks передаются LLM.
+
+Prompt требует использовать:
+
+```text
+ТОЛЬКО CONTEXT
+```
+
+и запрещает добавлять факты, которых нет в retrieved chunks.
+
+Модель должна вернуть структурированный результат.
+
+---
+
+# Формат ответа
+
+LLM возвращает JSON:
+
+```json
+{
+  "status": "answered",
+  "answer": "...",
+  "sources": [
+    {
+      "source": "...",
+      "section": "...",
+      "chunk_id": "..."
+    }
+  ],
+  "quotes": [
+    {
+      "chunk_id": "...",
+      "quote": "..."
+    }
+  ]
+}
+```
+
+Таким образом ответ состоит из трёх основных частей:
+
+```text
+ANSWER
++
+SOURCES
++
+QUOTES
 ```
 
 ---
 
-# Отладочный вывод
+# Answer
 
-Программа специально показывает retrieval pipeline.
+Поле:
 
-Сначала:
-
-```text
-QUERY REWRITE
-
-Original:
-...
-
-Rewritten:
-...
+```json
+"answer"
 ```
 
-После этого:
+содержит ответ на исходный вопрос пользователя.
+
+Ответ должен основываться только на retrieved context.
+
+---
+
+# Sources
+
+Каждый источник содержит:
 
 ```text
-BEFORE FILTER (TOP-8)
+source
+section
+chunk_id
 ```
 
-Для каждого chunk выводятся:
+Пример:
+
+```json
+{
+  "source": "documents/rag_notes.md",
+  "section": "Retrieval",
+  "chunk_id": "rag_notes.md::structured::0004"
+}
+```
+
+Это позволяет определить точное происхождение информации.
+
+---
+
+# Почему одного имени файла недостаточно
+
+Источник вида:
 
 ```text
-File
-Section
+rag_notes.md
+```
+
+может содержать много разных разделов.
+
+Поэтому используется более точная ссылка:
+
+```text
+source
++
+section
++
+chunk_id
+```
+
+Например:
+
+```text
+documents/rag_notes.md
+
+Section:
+Retrieval
+
+Chunk:
+rag_notes.md::structured::0004
+```
+
+---
+
+# Quotes
+
+Кроме источника модель обязана вернуть короткие цитаты.
+
+Формат:
+
+```json
+{
+  "chunk_id": "rag_notes.md::structured::0004",
+  "quote": "..."
+}
+```
+
+Цитата должна быть взята непосредственно из retrieved chunk.
+
+---
+
+# Зачем нужны цитаты
+
+Источник показывает:
+
+```text
+где искать доказательство
+```
+
+Цитата показывает:
+
+```text
+какой конкретно текст
+используется как доказательство
+```
+
+Получается:
+
+```text
+Answer
+   ↓
+Claim
+   ↓
+Quote
+   ↓
 Chunk ID
-Similarity
+   ↓
+Source Document
 ```
-
-Затем:
-
-```text
-AFTER FILTER
-```
-
-показывает только chunks, прошедшие threshold.
 
 ---
 
-# Итоговая статистика
+# Anti-Hallucination Validation
 
-После выполнения программа выводит:
+Одной инструкции в prompt недостаточно.
 
-```text
-Baseline chunks
-Candidates before filter
-Chunks after filter
-Removed by filter
-```
-
-Например концептуально:
+LLM теоретически может:
 
 ```text
-Baseline chunks: 4
-Candidates before filter: 8
-Chunks after filter: 4
-Removed by filter: 4
+придумать source
+придумать chunk_id
+изменить quote
+создать quote, которой нет в документе
 ```
 
-Конкретные значения зависят от вопроса и similarity scores.
+Поэтому после генерации запускается:
+
+```python
+validate_answer()
+```
 
 ---
 
-# Контрольные вопросы
+# Проверка наличия ответа
 
-Сохраняется набор из 10 вопросов Дня 22:
+Проверяется:
+
+```python
+result.get("answer")
+```
+
+Если answer отсутствует:
+
+```text
+Validation Error
+```
+
+---
+
+# Проверка Sources
+
+Сначала создаётся карта реально retrieved chunks:
+
+```python
+chunk_map = {
+    chunk_id: chunk
+}
+```
+
+После этого каждый source из ответа проверяется.
+
+Если модель указала:
+
+```text
+rag_notes.md::structured::9999
+```
+
+а такого retrieved chunk нет:
+
+```text
+Validation Error
+```
+
+---
+
+# Проверка Source Metadata
+
+Даже существующий `chunk_id` недостаточен.
+
+Дополнительно сравниваются:
+
+```text
+source
+section
+```
+
+с реальными metadata chunk.
+
+Таким образом модель не может корректно пройти validation, просто указав существующий ID с выдуманными metadata.
+
+---
+
+# Проверка Quotes
+
+Самая строгая проверка выполняется для цитат.
+
+Для каждой цитаты:
+
+```python
+if quote not in original_text:
+```
+
+Если строка отсутствует в исходном retrieved chunk:
+
+```text
+Validation Error
+```
+
+То есть цитата должна существовать в документе дословно.
+
+---
+
+# Пример
+
+LLM возвращает:
+
+```json
+{
+  "chunk_id": "rag_notes.md::structured::0004",
+  "quote": "Chunk overlap preserves context."
+}
+```
+
+Python получает настоящий текст:
+
+```text
+chunk["text"]
+```
+
+и проверяет:
+
+```text
+"Chunk overlap preserves context."
+        IN
+original chunk text
+```
+
+Если строки нет, цитата считается неподтверждённой.
+
+---
+
+# Validation Result
+
+В консоли выводится:
+
+```text
+Sources present: ...
+Quotes present: ...
+Validation passed: ...
+```
+
+Если обнаружены ошибки, они выводятся отдельно.
+
+Например:
+
+```text
+Validation passed: False
+
+- Неизвестный source chunk_id: ...
+- Цитата не найдена дословно в chunk: ...
+```
+
+---
+
+# Что Validation действительно гарантирует
+
+Программная проверка может определить:
+
+```text
+есть ли sources
+есть ли quotes
+существует ли chunk_id
+совпадает ли source
+совпадает ли section
+существует ли quote дословно в chunk
+```
+
+Это детерминированные проверки.
+
+---
+
+# Что Validation пока не гарантирует
+
+Текущая реализация не может строго доказать, что:
+
+```text
+весь смысл answer
+логически следует из quotes
+```
+
+Например, цитата может быть настоящей, но модель может сделать из неё слишком сильный вывод.
+
+Поэтому semantic consistency:
+
+```text
+Answer
+vs
+Quotes
+```
+
+проверяется отдельно на контрольных вопросах.
+
+Это важное различие между:
+
+```text
+Citation Validation
+```
+
+и:
+
+```text
+Semantic Grounding Evaluation
+```
+
+---
+
+# Контрольный набор
+
+Используется:
 
 ```text
 control_questions.json
 ```
 
-Для каждого вопроса определены:
+с 10 вопросами, созданными на предыдущем этапе.
+
+Для каждого вопроса уже определены:
 
 ```text
 question
@@ -718,208 +784,224 @@ expected
 expected_sources
 ```
 
-Это позволяет использовать одинаковый набор для сравнения разных версий retrieval.
-
-```text
-Same Questions
-      ↓
-Baseline Retrieval
-      VS
-Improved Retrieval
-```
+На Дне 24 этот же набор используется для проверки grounded answers.
 
 ---
 
-# Проверка релевантного вопроса
+# Что проверяем на 10 вопросах
 
-Пример:
-
-```text
-А зачем мы вообще делали overlap,
-когда разбивали документы?
-```
-
-Этот тест полезен для Query Rewrite, потому что вопрос сформулирован разговорно.
-
-Сравниваются:
+Для каждого содержательного ответа проверяются:
 
 ```text
-Baseline:
-Original Query → Top-4
+1. Есть ли answer?
 
-Improved:
-Original Query
-→ Rewrite
-→ Top-8
-→ Filter
-→ Top-4
+2. Есть ли sources?
+
+3. Реальны ли source / section / chunk_id?
+
+4. Есть ли quotes?
+
+5. Существуют ли quotes дословно
+   в соответствующих chunks?
+
+6. Подтверждают ли quotes
+   смысл answer?
 ```
+
+Первые пять пунктов могут проверяться программно полностью или частично.
+
+Последний требует semantic evaluation.
 
 ---
 
-# Проверка RAG knowledge
+# Проверка №1 — Chunk Overlap
 
-Другой вопрос:
-
-```text
-Какие проблемы могут ухудшить качество RAG?
-```
-
-В локальной базе ожидается информация из:
+Вопрос:
 
 ```text
-rag_notes.md
+Зачем используется overlap между chunks?
 ```
 
-в частности из раздела о failure modes.
+Ожидается, что retrieval найдёт информацию о chunking.
 
-По результатам retrieval можно проверить:
+Ответ должен содержать:
 
 ```text
-нашёл ли pipeline нужный документ
+Answer
+Sources
+Quotes
 ```
 
-и:
-
-```text
-остался ли он после фильтрации
-```
+В конце ожидается validation report.
 
 ---
 
-# Проверка нерелевантного вопроса
+# Проверка №2 — Metadata
 
-Особенно важный тест:
+Вопрос:
+
+```text
+Какие metadata сохраняются
+для каждого chunk?
+```
+
+Ожидаемый смысл:
+
+```text
+source
+title
+section
+chunk_id
+strategy
+```
+
+Теперь недостаточно просто перечислить эти поля.
+
+Система должна показать документы и цитаты, которыми этот ответ подтверждается.
+
+---
+
+# Проверка №3 — нерелевантный вопрос
+
+Например:
 
 ```text
 Как приготовить борщ?
 ```
 
-Локальная база посвящена:
+Локальная база посвящена техническим материалам и не предназначена для рецептов.
+
+При отсутствии chunks выше откалиброванного threshold система должна перейти в:
 
 ```text
-RAG
-MCP
-AI Agents
-Android
-Python
-Software Architecture
-Chunking
-Embeddings
+status = unknown
 ```
 
-и не предназначена для рецептов.
-
-Baseline Top-K всё равно способен вернуть несколько математически наиболее близких chunks.
-
-Improved pipeline добавляет:
+и ответить:
 
 ```text
-Similarity Threshold
+Не знаю.
+В локальной базе недостаточно
+релевантной информации.
+Пожалуйста, уточните вопрос.
 ```
 
-и может удалить кандидатов с недостаточной релевантностью.
-
-Этот тест демонстрирует отличие:
-
-```text
-Top-K
-```
-
-от:
-
-```text
-Top-K + Relevance Filtering
-```
+При этом генерация grounded answer не выполняется.
 
 ---
 
-# Threshold Calibration
+# Важность Threshold Calibration
 
-Значение:
+В проекте используется:
 
 ```python
 SIMILARITY_THRESHOLD = 0.45
 ```
 
-не считается универсальным порогом для любых embeddings и любых баз.
+Это экспериментальное значение.
 
-Это экспериментальная настройка проекта.
+Оно не является универсальным threshold для любых embedding models и любых документов.
 
-Порог необходимо оценивать по реальным данным:
-
-```text
-Relevant Questions
-        ↓
-Similarity Scores
-
-Irrelevant Questions
-        ↓
-Similarity Scores
-```
-
-После этого можно подобрать границу, которая лучше разделяет:
+Порог следует оценивать на:
 
 ```text
-relevant
+релевантных вопросах
++
+нерелевантных вопросах
 ```
 
-и:
+Если нерелевантный вопрос проходит threshold, порог требует дополнительной настройки.
 
-```text
-irrelevant
-```
-
-результаты.
+Если хорошие вопросы постоянно отбрасываются, threshold может быть слишком высоким.
 
 ---
 
-# Почему это не отдельный Model Reranker
+# Три уровня защиты
 
-Задание допускает:
+Day 24 использует три разных уровня.
 
-```text
-reranker
-или
-relevance filter
-```
-
-В данной реализации выбран:
+## Level 1 — Relevance Gate
 
 ```text
-Similarity-based Relevance Filter
+Weak Context
+    ↓
+STOP
+    ↓
+"Не знаю"
 ```
 
-Второй отдельной reranker-модели нет.
+Не позволяет генерировать grounded answer при отсутствии достаточного контекста.
 
-Поэтому архитектуру корректнее называть:
+## Level 2 — Grounded Prompt
 
 ```text
-RAG with Query Rewriting
-and Similarity Filtering
+Strong Context
+    ↓
+LLM
+    ↓
+Use only retrieved information
 ```
 
-Отдельный model reranker мог бы дополнительно получать:
+Ограничивает модель retrieved context.
+
+## Level 3 — Deterministic Validation
 
 ```text
-Query + Candidate Chunk
+LLM Result
+    ↓
+Python
+    ↓
+Source Validation
++
+Quote Validation
 ```
 
-и вычислять новый relevance score.
+Проверяет структурированные доказательства после генерации.
 
-Это возможное дальнейшее улучшение.
+---
+
+# Полный Anti-Hallucination Pipeline
+
+```text
+Question
+    ↓
+Rewrite
+    ↓
+Retrieve
+    ↓
+Filter
+    ↓
+Relevance Gate
+    │
+    ├──── weak ────→ "Не знаю"
+    │
+    ↓ strong
+Context
+    ↓
+Grounded Prompt
+    ↓
+LLM
+    ↓
+Answer + Sources + Quotes
+    ↓
+Source Validation
+    ↓
+Quote Validation
+    ↓
+Validated Result
+```
 
 ---
 
 # Запуск
 
-Если индекс уже создан:
+Если индекс уже существует:
 
 ```powershell
 py main.py
 ```
 
-Если индекса нет:
+Если индекс необходимо создать:
 
 ```powershell
 py index_documents.py
@@ -935,133 +1017,151 @@ py main.py
 
 # Что показать на видео
 
-## Тест 1 — релевантный разговорный запрос
+Для демонстрации удобно использовать три сценария.
+
+## 1. Grounded Answer
 
 ```text
-А зачем мы вообще делали overlap,
-когда разбивали документы?
+Зачем используется overlap между chunks?
 ```
 
 Показать:
 
 ```text
-Baseline Top-4
-       ↓
-Query Rewrite
-       ↓
-Top-8 Before Filter
-       ↓
-Similarity Scores
-       ↓
-Top-4 After Filter
-       ↓
-Improved Answer
+retrieval
+filter
+answer
+sources
+quotes
+validation
 ```
 
-## Тест 2 — нерелевантный запрос
+## 2. Project-specific Answer
+
+```text
+Какие metadata сохраняются
+для каждого chunk?
+```
+
+Показать связь:
+
+```text
+Answer
+→ Quote
+→ Chunk ID
+→ Source
+```
+
+## 3. Abstention
 
 ```text
 Как приготовить борщ?
 ```
 
-Показать разницу между:
+При отсутствии достаточно релевантного контекста показать:
 
 ```text
-Baseline Top-K
-```
-
-и:
-
-```text
-Similarity Filtering
+filter
+→ no relevant context
+→ "Не знаю"
+→ request clarification
+→ LLM answer generation skipped
 ```
 
 ---
 
 # Что реализовано
 
-В проект добавлены:
+В Day 24 добавлены:
 
-- Query Rewrite;
-- query embedding после rewriting;
-- расширенный candidate retrieval;
-- Top-K до фильтрации;
-- similarity threshold;
-- relevance filtering;
-- Top-K после фильтрации;
-- обработка случая без релевантных chunks;
-- baseline RAG;
-- improved RAG;
-- вывод similarity scores;
-- сравнение двух retrieval pipelines;
-- повторное использование контрольного набора из 10 вопросов.
+- обязательный structured answer;
+- список sources;
+- `source`;
+- `section`;
+- `chunk_id`;
+- обязательные quotes;
+- связь quote с chunk;
+- проверка существования source;
+- проверка source metadata;
+- проверка существования chunk_id;
+- дословная проверка quotes;
+- relevance gate;
+- режим `unknown`;
+- ответ «Не знаю»;
+- просьба уточнить вопрос;
+- пропуск LLM generation при слабом context;
+- validation report;
+- повторное использование 10 контрольных вопросов.
 
 ---
 
 # Результат
 
-Получен улучшенный RAG pipeline:
+RAG теперь возвращает не просто текстовый ответ:
 
 ```text
-Question
-    ↓
-Query Rewrite
-    ↓
-Embedding
-    ↓
-Vector Search
-    ↓
-Top-8 Candidates
-    ↓
-Similarity Filter
-    ↓
-Top-4 Relevant Chunks
-    ↓
-Context
-    ↓
-LLM
-    ↓
 Answer
 ```
 
-При этом сохранён baseline:
+а проверяемую структуру:
 
 ```text
-Question
-    ↓
-Embedding
-    ↓
-Top-4
-    ↓
-LLM
+Answer
+   ↓
+Sources
+   ↓
+Sections
+   ↓
+Chunk IDs
+   ↓
+Quotes
 ```
 
-Это позволяет экспериментально сравнивать качество retrieval и финальных ответов.
+После этого Python проверяет, что доказательства действительно относятся к retrieved context.
 
 ---
 
-# Вывод
+# Итог
 
-На Дне 22 система научилась находить наиболее похожие chunks.
-
-На Дне 23 добавлена следующая важная идея:
+На предыдущих этапах RAG научился:
 
 ```text
-Наиболее похожий результат
-не обязательно является
-достаточно релевантным результатом.
+индексировать документы
+→ находить chunks
+→ фильтровать chunks
 ```
 
-Поэтому retrieval теперь состоит из нескольких этапов:
+На Дне 24 добавлен следующий уровень:
 
 ```text
-Rewrite
-    ↓
+найти информацию
+        ↓
+ответить по информации
+        ↓
+показать доказательства
+        ↓
+проверить доказательства
+```
+
+Если подходящих доказательств нет:
+
+```text
+не генерировать неподтверждённый ответ
+```
+
+а перейти в безопасный режим:
+
+```text
+"Не знаю. Пожалуйста, уточните вопрос."
+```
+
+Итоговая архитектура:
+
+```text
 Retrieve
-    ↓
-Filter
-    ↓
-Generate
+→ Filter
+→ Gate
+→ Ground
+→ Cite
+→ Validate
 ```
-
-Так RAG получает возможность не только выбирать лучшие документы, но и отбрасывать кандидатов, которые не проходят заданный порог релевантности.

@@ -10,19 +10,13 @@ from google.genai import types
 # CONFIG
 # ============================================================
 
-INDEX_FILE = Path(
-    "indexes/index_structured.json"
-)
+INDEX_FILE = Path("indexes/index_structured.json")
 
 EMBEDDING_MODEL = "gemini-embedding-2"
 EMBEDDING_DIMENSIONS = 768
 
 LLM_MODEL = "gemini-3.5-flash-lite"
 
-# Baseline Day 22
-BASELINE_TOP_K = 4
-
-# Day 23
 TOP_K_BEFORE_FILTER = 8
 TOP_K_AFTER_FILTER = 4
 
@@ -43,23 +37,20 @@ client = genai.Client()
 def load_index() -> dict:
 
     if not INDEX_FILE.exists():
-
         raise FileNotFoundError(
             f"Индекс не найден: {INDEX_FILE}\n"
-            f"Сначала запустите: "
-            f"py index_documents.py"
+            "Сначала запустите: py index_documents.py"
         )
 
     with INDEX_FILE.open(
         "r",
         encoding="utf-8"
     ) as file:
-
         return json.load(file)
 
 
 # ============================================================
-# EMBEDDING
+# QUERY EMBEDDING
 # ============================================================
 
 def create_query_embedding(
@@ -90,10 +81,8 @@ def cosine_similarity(
 ) -> float:
 
     if len(vector_a) != len(vector_b):
-
         raise ValueError(
-            "Размерности embeddings "
-            "не совпадают."
+            "Размерности embeddings не совпадают."
         )
 
     dot_product = sum(
@@ -105,72 +94,20 @@ def cosine_similarity(
     )
 
     norm_a = math.sqrt(
-        sum(
-            a * a
-            for a in vector_a
-        )
+        sum(a * a for a in vector_a)
     )
 
     norm_b = math.sqrt(
-        sum(
-            b * b
-            for b in vector_b
-        )
+        sum(b * b for b in vector_b)
     )
 
-    if (
-        norm_a == 0
-        or norm_b == 0
-    ):
+    if norm_a == 0 or norm_b == 0:
         return 0.0
 
     return (
         dot_product
         / (norm_a * norm_b)
     )
-
-
-# ============================================================
-# VECTOR SEARCH
-# ============================================================
-
-def search_chunks(
-    query: str,
-    index: dict,
-    top_k: int
-) -> list[dict]:
-
-    query_embedding = (
-        create_query_embedding(
-            query
-        )
-    )
-
-    scored_chunks = []
-
-    for chunk in index["chunks"]:
-
-        score = cosine_similarity(
-            query_embedding,
-            chunk["embedding"]
-        )
-
-        scored_chunks.append(
-            {
-                "score": score,
-                "text": chunk["text"],
-                "metadata":
-                    chunk["metadata"]
-            }
-        )
-
-    scored_chunks.sort(
-        key=lambda item:
-            item["score"],
-        reverse=True
-    )
-
-    return scored_chunks[:top_k]
 
 
 # ============================================================
@@ -193,8 +130,6 @@ def rewrite_query(
 - не отвечай на вопрос;
 - не добавляй новые факты;
 - убери разговорные слова;
-- добавь только термины,
-  явно следующие из вопроса;
 - верни только поисковый запрос.
 
 Вопрос:
@@ -202,17 +137,13 @@ def rewrite_query(
 {question}
 """.strip()
 
-    response = (
-        client.models.generate_content(
-            model=LLM_MODEL,
-            contents=prompt,
-            config=
-                types.GenerateContentConfig(
-                    thinking_config=
-                        types.ThinkingConfig(
-                            thinking_level=
-                                "minimal"
-                        )
+    response = client.models.generate_content(
+        model=LLM_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            thinking_config=
+                types.ThinkingConfig(
+                    thinking_level="minimal"
                 )
         )
     )
@@ -221,11 +152,48 @@ def rewrite_query(
         response.text or ""
     ).strip()
 
-    # Безопасный fallback.
-    if not rewritten:
-        return question
+    return rewritten or question
 
-    return rewritten
+
+# ============================================================
+# SEARCH
+# ============================================================
+
+def search_chunks(
+    query: str,
+    index: dict,
+    top_k: int
+) -> list[dict]:
+
+    query_embedding = (
+        create_query_embedding(query)
+    )
+
+    results = []
+
+    for chunk in index["chunks"]:
+
+        score = cosine_similarity(
+            query_embedding,
+            chunk["embedding"]
+        )
+
+        results.append(
+            {
+                "score": score,
+                "text": chunk["text"],
+                "metadata":
+                    chunk["metadata"]
+            }
+        )
+
+    results.sort(
+        key=lambda item:
+            item["score"],
+        reverse=True
+    )
+
+    return results[:top_k]
 
 
 # ============================================================
@@ -233,18 +201,19 @@ def rewrite_query(
 # ============================================================
 
 def filter_chunks(
-    chunks: list[dict],
-    threshold: float,
-    top_k: int
+    chunks: list[dict]
 ) -> list[dict]:
 
     relevant = [
         chunk
         for chunk in chunks
-        if chunk["score"] >= threshold
+        if chunk["score"]
+        >= SIMILARITY_THRESHOLD
     ]
 
-    return relevant[:top_k]
+    return relevant[
+        :TOP_K_AFTER_FILTER
+    ]
 
 
 # ============================================================
@@ -268,19 +237,22 @@ def build_context(
             f"""
 --- SOURCE {number} ---
 
-File:
+source:
+{metadata.get("source")}
+
+title:
 {metadata.get("title")}
 
-Section:
+section:
 {metadata.get("section")}
 
-Chunk ID:
+chunk_id:
 {metadata.get("chunk_id")}
 
-Similarity:
+similarity:
 {chunk["score"]:.4f}
 
-Text:
+text:
 {chunk["text"]}
 """.strip()
         )
@@ -289,35 +261,100 @@ Text:
 
 
 # ============================================================
-# ANSWER
+# "I DON'T KNOW"
 # ============================================================
 
-def answer_with_context(
-    question: str,
+def should_abstain(
     chunks: list[dict]
-) -> str:
+) -> bool:
 
     if not chunks:
+        return True
 
-        return (
-            "В локальной базе не найдено "
-            "достаточно релевантной информации "
-            "для ответа."
-        )
+    best_score = chunks[0]["score"]
 
-    context = build_context(
-        chunks
+    return (
+        best_score
+        < SIMILARITY_THRESHOLD
     )
+
+
+def build_unknown_answer() -> dict:
+
+    return {
+        "status": "unknown",
+        "answer": (
+            "Не знаю. В локальной базе "
+            "недостаточно релевантной информации. "
+            "Пожалуйста, уточните вопрос."
+        ),
+        "sources": [],
+        "quotes": []
+    }
+
+
+# ============================================================
+# RAG ANSWER
+# ============================================================
+
+def generate_grounded_answer(
+    question: str,
+    chunks: list[dict]
+) -> dict:
+
+    context = build_context(chunks)
 
     prompt = f"""
 Ответь на QUESTION,
-используя только информацию
+используя ТОЛЬКО информацию
 из CONTEXT.
 
-Не придумывай отсутствующие факты.
+Запрещено использовать факты,
+которых нет в CONTEXT.
 
-Если CONTEXT недостаточно,
-прямо скажи об этом.
+Каждое существенное утверждение
+в answer должно подтверждаться
+переданными chunks.
+
+Ты обязан вернуть:
+
+1. answer
+2. sources
+3. quotes
+
+Для sources используй только
+source, section и chunk_id,
+которые реально присутствуют
+в CONTEXT.
+
+Для quotes копируй короткие
+фрагменты ДОСЛОВНО из текста
+соответствующего chunk.
+
+Не придумывай цитаты.
+
+Каждая quote должна содержать
+chunk_id источника.
+
+Верни только JSON следующего вида:
+
+{{
+  "status": "answered",
+  "answer": "...",
+  "sources": [
+    {{
+      "source": "...",
+      "section": "...",
+      "chunk_id": "..."
+    }}
+  ],
+  "quotes": [
+    {{
+      "chunk_id": "...",
+      "quote": "..."
+    }}
+  ]
+}}
 
 CONTEXT:
 
@@ -326,30 +363,172 @@ CONTEXT:
 QUESTION:
 
 {question}
-
-ANSWER:
 """.strip()
 
-    response = (
-        client.models.generate_content(
-            model=LLM_MODEL,
-            contents=prompt,
-            config=
-                types.GenerateContentConfig(
-                    thinking_config=
-                        types.ThinkingConfig(
-                            thinking_level=
-                                "minimal"
-                        )
+    response = client.models.generate_content(
+        model=LLM_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type=
+                "application/json",
+            thinking_config=
+                types.ThinkingConfig(
+                    thinking_level="minimal"
                 )
         )
     )
 
-    return response.text
+    return json.loads(response.text)
 
 
 # ============================================================
-# PRINT CHUNKS
+# VALIDATION
+# ============================================================
+
+def validate_answer(
+    result: dict,
+    chunks: list[dict]
+) -> dict:
+
+    errors = []
+
+    if not result.get("answer"):
+        errors.append(
+            "Ответ отсутствует."
+        )
+
+    sources = result.get(
+        "sources",
+        []
+    )
+
+    quotes = result.get(
+        "quotes",
+        []
+    )
+
+    if not sources:
+        errors.append(
+            "Источники отсутствуют."
+        )
+
+    if not quotes:
+        errors.append(
+            "Цитаты отсутствуют."
+        )
+
+    # --------------------------------------------------------
+    # Allowed chunks
+    # --------------------------------------------------------
+
+    chunk_map = {
+        chunk["metadata"].get(
+            "chunk_id"
+        ): chunk
+        for chunk in chunks
+    }
+
+    # --------------------------------------------------------
+    # Validate sources
+    # --------------------------------------------------------
+
+    for source in sources:
+
+        chunk_id = source.get(
+            "chunk_id"
+        )
+
+        if chunk_id not in chunk_map:
+
+            errors.append(
+                f"Неизвестный source "
+                f"chunk_id: {chunk_id}"
+            )
+
+            continue
+
+        real_metadata = (
+            chunk_map[
+                chunk_id
+            ]["metadata"]
+        )
+
+        if (
+            source.get("source")
+            != real_metadata.get("source")
+        ):
+            errors.append(
+                f"Неверный source для "
+                f"{chunk_id}"
+            )
+
+        if (
+            source.get("section")
+            != real_metadata.get("section")
+        ):
+            errors.append(
+                f"Неверный section для "
+                f"{chunk_id}"
+            )
+
+    # --------------------------------------------------------
+    # Validate quotes
+    # --------------------------------------------------------
+
+    for quote_item in quotes:
+
+        chunk_id = quote_item.get(
+            "chunk_id"
+        )
+
+        quote = (
+            quote_item.get(
+                "quote",
+                ""
+            )
+            .strip()
+        )
+
+        if chunk_id not in chunk_map:
+
+            errors.append(
+                f"Цитата с неизвестным "
+                f"chunk_id: {chunk_id}"
+            )
+
+            continue
+
+        original_text = (
+            chunk_map[
+                chunk_id
+            ]["text"]
+        )
+
+        if not quote:
+
+            errors.append(
+                f"Пустая цитата: "
+                f"{chunk_id}"
+            )
+
+            continue
+
+        if quote not in original_text:
+
+            errors.append(
+                f"Цитата не найдена "
+                f"дословно в chunk: "
+                f"{chunk_id}"
+            )
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors
+    }
+
+
+# ============================================================
+# PRINT RETRIEVAL
 # ============================================================
 
 def print_chunks(
@@ -369,6 +548,7 @@ def print_chunks(
             "Релевантные chunks "
             "не найдены."
         )
+
         return
 
     for number, chunk in enumerate(
@@ -402,122 +582,89 @@ def print_chunks(
 
 
 # ============================================================
-# BASELINE RAG — DAY 22
+# PRINT ANSWER
 # ============================================================
 
-def run_baseline_rag(
-    question: str,
-    index: dict
+def print_answer(
+    result: dict
 ):
 
-    chunks = search_chunks(
-        query=question,
-        index=index,
-        top_k=BASELINE_TOP_K
-    )
+    print()
+    print("=" * 60)
+    print("ОТВЕТ")
+    print("=" * 60)
 
-    print_chunks(
-        "BASELINE — TOP CHUNKS",
-        chunks
-    )
-
-    answer = answer_with_context(
-        question,
-        chunks
-    )
-
-    return answer, chunks
-
-
-# ============================================================
-# IMPROVED RAG — DAY 23
-# ============================================================
-
-def run_improved_rag(
-    question: str,
-    index: dict
-):
-
-    # --------------------------------------------------------
-    # STEP 1 — QUERY REWRITE
-    # --------------------------------------------------------
-
-    rewritten_query = (
-        rewrite_query(
-            question
+    print()
+    print(
+        result.get(
+            "answer",
+            ""
         )
     )
 
-    print()
-    print("=" * 60)
-    print("QUERY REWRITE")
-    print("=" * 60)
-
-    print()
-    print(
-        f"Original:\n"
-        f"{question}"
+    sources = result.get(
+        "sources",
+        []
     )
 
-    print()
-    print(
-        f"Rewritten:\n"
-        f"{rewritten_query}"
+    if sources:
+
+        print()
+        print("=" * 60)
+        print("ИСТОЧНИКИ")
+        print("=" * 60)
+
+        for number, source in enumerate(
+            sources,
+            start=1
+        ):
+
+            print()
+
+            print(
+                f"{number}. "
+                f"{source.get('source')}"
+            )
+
+            print(
+                f"   Section: "
+                f"{source.get('section')}"
+            )
+
+            print(
+                f"   Chunk ID: "
+                f"{source.get('chunk_id')}"
+            )
+
+    quotes = result.get(
+        "quotes",
+        []
     )
 
-    # --------------------------------------------------------
-    # STEP 2 — RETRIEVAL
-    # --------------------------------------------------------
+    if quotes:
 
-    candidates = search_chunks(
-        query=rewritten_query,
-        index=index,
-        top_k=
-            TOP_K_BEFORE_FILTER
-    )
+        print()
+        print("=" * 60)
+        print("ЦИТАТЫ")
+        print("=" * 60)
 
-    print_chunks(
-        f"BEFORE FILTER "
-        f"(TOP-{TOP_K_BEFORE_FILTER})",
-        candidates
-    )
+        for number, quote in enumerate(
+            quotes,
+            start=1
+        ):
 
-    # --------------------------------------------------------
-    # STEP 3 — FILTER
-    # --------------------------------------------------------
+            print()
 
-    filtered = filter_chunks(
-        chunks=candidates,
-        threshold=
-            SIMILARITY_THRESHOLD,
-        top_k=
-            TOP_K_AFTER_FILTER
-    )
+            print(
+                f"{number}. "
+                f"[{quote.get('chunk_id')}]"
+            )
 
-    print_chunks(
-        f"AFTER FILTER "
-        f"(threshold="
-        f"{SIMILARITY_THRESHOLD}, "
-        f"max TOP-"
-        f"{TOP_K_AFTER_FILTER})",
-        filtered
-    )
-
-    # --------------------------------------------------------
-    # STEP 4 — ANSWER
-    # --------------------------------------------------------
-
-    answer = answer_with_context(
-        question,
-        filtered
-    )
-
-    return (
-        answer,
-        rewritten_query,
-        candidates,
-        filtered
-    )
+            print(
+                f"   \""
+                f"{quote.get('quote')}"
+                f"\""
+            )
 
 
 # ============================================================
@@ -528,8 +675,9 @@ def main():
 
     print("=" * 60)
     print(
-        "ДЕНЬ 23 — RERANKING "
-        "И ФИЛЬТРАЦИЯ"
+        "ДЕНЬ 24 — ЦИТАТЫ, "
+        "ИСТОЧНИКИ И "
+        "АНТИ-ГАЛЛЮЦИНАЦИИ"
     )
     print("=" * 60)
 
@@ -551,24 +699,9 @@ def main():
         f"{len(index['chunks'])}"
     )
 
-    print()
     print(
-        "Настройки Day 23:"
-    )
-
-    print(
-        f"TOP-K before filter: "
-        f"{TOP_K_BEFORE_FILTER}"
-    )
-
-    print(
-        f"Similarity threshold: "
+        f"Threshold: "
         f"{SIMILARITY_THRESHOLD}"
-    )
-
-    print(
-        f"TOP-K after filter: "
-        f"{TOP_K_AFTER_FILTER}"
     )
 
     print()
@@ -580,101 +713,141 @@ def main():
     if not question:
         return
 
-    # ========================================================
-    # BASELINE
-    # ========================================================
+    # --------------------------------------------------------
+    # QUERY REWRITE
+    # --------------------------------------------------------
+
+    rewritten_query = (
+        rewrite_query(question)
+    )
 
     print()
-    print("#" * 60)
-    print("MODE 1 — BASELINE RAG")
-    print("#" * 60)
+    print("=" * 60)
+    print("QUERY REWRITE")
+    print("=" * 60)
 
-    baseline_answer, baseline_chunks = (
-        run_baseline_rag(
+    print()
+    print(
+        f"Original:\n"
+        f"{question}"
+    )
+
+    print()
+    print(
+        f"Rewritten:\n"
+        f"{rewritten_query}"
+    )
+
+    # --------------------------------------------------------
+    # SEARCH
+    # --------------------------------------------------------
+
+    candidates = search_chunks(
+        query=rewritten_query,
+        index=index,
+        top_k=
+            TOP_K_BEFORE_FILTER
+    )
+
+    print_chunks(
+        f"BEFORE FILTER "
+        f"(TOP-{TOP_K_BEFORE_FILTER})",
+        candidates
+    )
+
+    # --------------------------------------------------------
+    # FILTER
+    # --------------------------------------------------------
+
+    filtered = filter_chunks(
+        candidates
+    )
+
+    print_chunks(
+        "AFTER FILTER",
+        filtered
+    )
+
+    # --------------------------------------------------------
+    # ANTI-HALLUCINATION GATE
+    # --------------------------------------------------------
+
+    if should_abstain(filtered):
+
+        result = (
+            build_unknown_answer()
+        )
+
+        print_answer(result)
+
+        print()
+        print("=" * 60)
+        print("ANTI-HALLUCINATION")
+        print("=" * 60)
+
+        print()
+        print(
+            "Ответ LLM не генерировался, "
+            "потому что релевантность "
+            "контекста ниже порога."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # GENERATE
+    # --------------------------------------------------------
+
+    result = (
+        generate_grounded_answer(
             question,
-            index
+            filtered
         )
     )
 
-    print()
-    print("=" * 60)
-    print("BASELINE ANSWER")
-    print("=" * 60)
+    # --------------------------------------------------------
+    # VALIDATE
+    # --------------------------------------------------------
 
-    print()
-    print(
-        baseline_answer
+    validation = validate_answer(
+        result,
+        filtered
     )
 
-    # ========================================================
-    # IMPROVED
-    # ========================================================
-
-    print()
-    print("#" * 60)
-    print("MODE 2 — IMPROVED RAG")
-    print("#" * 60)
-
-    (
-        improved_answer,
-        rewritten_query,
-        candidates,
-        filtered_chunks
-    ) = run_improved_rag(
-        question,
-        index
-    )
+    print_answer(result)
 
     print()
     print("=" * 60)
-    print("IMPROVED ANSWER")
-    print("=" * 60)
-
-    print()
-    print(
-        improved_answer
-    )
-
-    # ========================================================
-    # COMPARISON
-    # ========================================================
-
-    print()
-    print("=" * 60)
-    print("СРАВНЕНИЕ")
+    print("VALIDATION")
     print("=" * 60)
 
     print()
 
     print(
-        f"Baseline chunks: "
-        f"{len(baseline_chunks)}"
+        f"Sources present: "
+        f"{bool(result.get('sources'))}"
     )
 
     print(
-        f"Candidates before filter: "
-        f"{len(candidates)}"
+        f"Quotes present: "
+        f"{bool(result.get('quotes'))}"
     )
 
     print(
-        f"Chunks after filter: "
-        f"{len(filtered_chunks)}"
+        f"Validation passed: "
+        f"{validation['valid']}"
     )
 
-    removed = (
-        len(candidates)
-        - len(filtered_chunks)
-    )
+    if validation["errors"]:
 
-    print(
-        f"Removed by filter: "
-        f"{removed}"
-    )
+        print()
 
-    print()
-    print(
-        "Day 23 completed."
-    )
+        for error in (
+            validation["errors"]
+        ):
+            print(
+                f"- {error}"
+            )
 
 
 if __name__ == "__main__":
