@@ -12,6 +12,10 @@ from google.genai import types
 
 INDEX_FILE = Path("indexes/index_structured.json")
 
+DATA_DIR = Path("data")
+HISTORY_FILE = DATA_DIR / "chat_history.json"
+TASK_STATE_FILE = DATA_DIR / "task_state.json"
+
 EMBEDDING_MODEL = "gemini-embedding-2"
 EMBEDDING_DIMENSIONS = 768
 
@@ -22,6 +26,8 @@ TOP_K_AFTER_FILTER = 4
 
 SIMILARITY_THRESHOLD = 0.45
 
+HISTORY_WINDOW = 8
+
 
 # ============================================================
 # GEMINI
@@ -31,15 +37,329 @@ client = genai.Client()
 
 
 # ============================================================
-# LOAD INDEX
+# JSON STORAGE
+# ============================================================
+
+def load_json(
+    path: Path,
+    default
+):
+    if not path.exists():
+        return default
+
+    try:
+        with path.open(
+            "r",
+            encoding="utf-8"
+        ) as file:
+            return json.load(file)
+
+    except (
+        json.JSONDecodeError,
+        OSError
+    ):
+        return default
+
+
+def save_json(
+    path: Path,
+    data
+):
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    with path.open(
+        "w",
+        encoding="utf-8"
+    ) as file:
+        json.dump(
+            data,
+            file,
+            ensure_ascii=False,
+            indent=2
+        )
+
+
+# ============================================================
+# HISTORY
+# ============================================================
+
+def load_history() -> list[dict]:
+
+    return load_json(
+        HISTORY_FILE,
+        []
+    )
+
+
+def save_history(
+    history: list[dict]
+):
+
+    save_json(
+        HISTORY_FILE,
+        history
+    )
+
+
+def add_message(
+    history: list[dict],
+    role: str,
+    content: str
+):
+
+    history.append(
+        {
+            "role": role,
+            "content": content
+        }
+    )
+
+
+def format_history(
+    history: list[dict]
+) -> str:
+
+    recent = history[
+        -HISTORY_WINDOW:
+    ]
+
+    if not recent:
+        return "(история пока пуста)"
+
+    parts = []
+
+    for message in recent:
+
+        role = message.get(
+            "role",
+            "unknown"
+        )
+
+        content = message.get(
+            "content",
+            ""
+        )
+
+        parts.append(
+            f"{role.upper()}: "
+            f"{content}"
+        )
+
+    return "\n".join(parts)
+
+
+# ============================================================
+# TASK STATE
+# ============================================================
+
+def default_task_state() -> dict:
+
+    return {
+        "goal": "",
+        "clarifications": [],
+        "constraints": [],
+        "terms": {}
+    }
+
+
+def load_task_state() -> dict:
+
+    state = load_json(
+        TASK_STATE_FILE,
+        default_task_state()
+    )
+
+    default = default_task_state()
+
+    for key, value in default.items():
+
+        if key not in state:
+            state[key] = value
+
+    return state
+
+
+def save_task_state(
+    state: dict
+):
+
+    save_json(
+        TASK_STATE_FILE,
+        state
+    )
+
+
+def format_task_state(
+    state: dict
+) -> str:
+
+    return json.dumps(
+        state,
+        ensure_ascii=False,
+        indent=2
+    )
+
+
+# ============================================================
+# TASK MEMORY UPDATE
+# ============================================================
+
+def update_task_state(
+    user_message: str,
+    history: list[dict],
+    current_state: dict
+) -> dict:
+
+    history_text = format_history(
+        history
+    )
+
+    state_text = format_task_state(
+        current_state
+    )
+
+    prompt = f"""
+Ты обновляешь рабочую память
+текущего диалога.
+
+CURRENT TASK STATE:
+
+{state_text}
+
+RECENT HISTORY:
+
+{history_text}
+
+NEW USER MESSAGE:
+
+{user_message}
+
+Обнови task state.
+
+Храни только информацию,
+полезную для продолжения
+текущей задачи.
+
+Поля:
+
+goal:
+главная текущая цель пользователя.
+
+clarifications:
+что пользователь уже уточнил
+по текущей задаче.
+
+constraints:
+зафиксированные ограничения
+и требования.
+
+terms:
+важные термины и их значение
+в рамках текущего диалога.
+
+Правила:
+
+- не придумывай факты;
+- сохраняй старую информацию,
+  если пользователь её не изменил;
+- если пользователь явно изменил
+  требование, используй новое;
+- не записывай случайную беседу;
+- не сохраняй полный transcript;
+- не добавляй чувствительные данные;
+- возвращай только JSON.
+
+Формат:
+
+{{
+  "goal": "...",
+  "clarifications": [
+    "..."
+  ],
+  "constraints": [
+    "..."
+  ],
+  "terms": {{
+    "term": "meaning"
+  }}
+}}
+""".strip()
+
+    response = client.models.generate_content(
+        model=LLM_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type=
+                "application/json",
+            thinking_config=
+                types.ThinkingConfig(
+                    thinking_level="minimal"
+                )
+        )
+    )
+
+    try:
+        updated = json.loads(
+            response.text
+        )
+
+    except (
+        json.JSONDecodeError,
+        TypeError
+    ):
+        return current_state
+
+    return {
+        "goal": updated.get(
+            "goal",
+            current_state.get(
+                "goal",
+                ""
+            )
+        ),
+        "clarifications":
+            updated.get(
+                "clarifications",
+                current_state.get(
+                    "clarifications",
+                    []
+                )
+            ),
+        "constraints":
+            updated.get(
+                "constraints",
+                current_state.get(
+                    "constraints",
+                    []
+                )
+            ),
+        "terms":
+            updated.get(
+                "terms",
+                current_state.get(
+                    "terms",
+                    {}
+                )
+            )
+    }
+
+
+# ============================================================
+# INDEX
 # ============================================================
 
 def load_index() -> dict:
 
     if not INDEX_FILE.exists():
+
         raise FileNotFoundError(
-            f"Индекс не найден: {INDEX_FILE}\n"
-            "Сначала запустите: py index_documents.py"
+            f"Индекс не найден: "
+            f"{INDEX_FILE}\n"
+            "Запустите: "
+            "py index_documents.py"
         )
 
     with INDEX_FILE.open(
@@ -50,7 +370,7 @@ def load_index() -> dict:
 
 
 # ============================================================
-# QUERY EMBEDDING
+# EMBEDDING
 # ============================================================
 
 def create_query_embedding(
@@ -81,8 +401,10 @@ def cosine_similarity(
 ) -> float:
 
     if len(vector_a) != len(vector_b):
+
         raise ValueError(
-            "Размерности embeddings не совпадают."
+            "Размерности embeddings "
+            "не совпадают."
         )
 
     dot_product = sum(
@@ -94,14 +416,23 @@ def cosine_similarity(
     )
 
     norm_a = math.sqrt(
-        sum(a * a for a in vector_a)
+        sum(
+            a * a
+            for a in vector_a
+        )
     )
 
     norm_b = math.sqrt(
-        sum(b * b for b in vector_b)
+        sum(
+            b * b
+            for b in vector_b
+        )
     )
 
-    if norm_a == 0 or norm_b == 0:
+    if (
+        norm_a == 0
+        or norm_b == 0
+    ):
         return 0.0
 
     return (
@@ -111,30 +442,59 @@ def cosine_similarity(
 
 
 # ============================================================
-# QUERY REWRITE
+# CONTEXTUAL QUERY REWRITE
 # ============================================================
 
 def rewrite_query(
-    question: str
+    question: str,
+    history: list[dict],
+    task_state: dict
 ) -> str:
 
+    history_text = format_history(
+        history
+    )
+
+    state_text = format_task_state(
+        task_state
+    )
+
     prompt = f"""
-Перепиши вопрос пользователя
-в короткий поисковый запрос
-для semantic search по технической
-базе документов.
+Создай короткий самостоятельный
+поисковый запрос для semantic search.
 
-Правила:
+Пользователь может использовать
+слова вроде:
 
-- сохрани исходный смысл;
-- не отвечай на вопрос;
-- не добавляй новые факты;
-- убери разговорные слова;
-- верни только поисковый запрос.
+"это"
+"он"
+"такой подход"
+"а что с этим?"
+"а какие у него недостатки?"
 
-Вопрос:
+Используй RECENT HISTORY
+и TASK STATE, чтобы восстановить
+контекст таких ссылок.
+
+Не отвечай на вопрос.
+
+Не добавляй фактов,
+которых нет в сообщении,
+истории или task state.
+
+TASK STATE:
+
+{state_text}
+
+RECENT HISTORY:
+
+{history_text}
+
+CURRENT QUESTION:
 
 {question}
+
+Верни только поисковый запрос.
 """.strip()
 
     response = client.models.generate_content(
@@ -161,12 +521,13 @@ def rewrite_query(
 
 def search_chunks(
     query: str,
-    index: dict,
-    top_k: int
+    index: dict
 ) -> list[dict]:
 
     query_embedding = (
-        create_query_embedding(query)
+        create_query_embedding(
+            query
+        )
     )
 
     results = []
@@ -193,7 +554,9 @@ def search_chunks(
         reverse=True
     )
 
-    return results[:top_k]
+    return results[
+        :TOP_K_BEFORE_FILTER
+    ]
 
 
 # ============================================================
@@ -217,10 +580,10 @@ def filter_chunks(
 
 
 # ============================================================
-# CONTEXT
+# RAG CONTEXT
 # ============================================================
 
-def build_context(
+def build_rag_context(
     chunks: list[dict]
 ) -> str:
 
@@ -240,9 +603,6 @@ def build_context(
 source:
 {metadata.get("source")}
 
-title:
-{metadata.get("title")}
-
 section:
 {metadata.get("section")}
 
@@ -261,82 +621,96 @@ text:
 
 
 # ============================================================
-# "I DON'T KNOW"
+# CHAT ANSWER
 # ============================================================
 
-def should_abstain(
-    chunks: list[dict]
-) -> bool:
-
-    if not chunks:
-        return True
-
-    best_score = chunks[0]["score"]
-
-    return (
-        best_score
-        < SIMILARITY_THRESHOLD
-    )
-
-
-def build_unknown_answer() -> dict:
-
-    return {
-        "status": "unknown",
-        "answer": (
-            "Не знаю. В локальной базе "
-            "недостаточно релевантной информации. "
-            "Пожалуйста, уточните вопрос."
-        ),
-        "sources": [],
-        "quotes": []
-    }
-
-
-# ============================================================
-# RAG ANSWER
-# ============================================================
-
-def generate_grounded_answer(
+def generate_answer(
     question: str,
+    history: list[dict],
+    task_state: dict,
     chunks: list[dict]
 ) -> dict:
 
-    context = build_context(chunks)
+    if not chunks:
+
+        return {
+            "status": "unknown",
+            "answer": (
+                "Не знаю. В локальной "
+                "базе недостаточно "
+                "релевантной информации. "
+                "Пожалуйста, уточните вопрос."
+            ),
+            "sources": []
+        }
+
+    history_text = format_history(
+        history
+    )
+
+    state_text = format_task_state(
+        task_state
+    )
+
+    rag_context = build_rag_context(
+        chunks
+    )
 
     prompt = f"""
-Ответь на QUESTION,
-используя ТОЛЬКО информацию
-из CONTEXT.
+Ты — ассистент в продолжительном
+техническом диалоге.
 
-Запрещено использовать факты,
-которых нет в CONTEXT.
+Тебе доступны три разных вида
+контекста:
 
-Каждое существенное утверждение
-в answer должно подтверждаться
-переданными chunks.
+1. TASK STATE
+   Главная цель, уточнения,
+   ограничения и термины.
 
-Ты обязан вернуть:
+2. RECENT HISTORY
+   Последние сообщения диалога.
 
-1. answer
-2. sources
-3. quotes
+3. RAG CONTEXT
+   Фактическая информация
+   из локальных документов.
 
-Для sources используй только
-source, section и chunk_id,
-которые реально присутствуют
-в CONTEXT.
+Правила:
 
-Для quotes копируй короткие
-фрагменты ДОСЛОВНО из текста
-соответствующего chunk.
+- отвечай на CURRENT QUESTION;
+- учитывай цель диалога;
+- учитывай ранее зафиксированные
+  ограничения;
+- фактические утверждения о базе
+  делай только на основе
+  RAG CONTEXT;
+- не придумывай источники;
+- используй только chunk_id,
+  реально переданные в
+  RAG CONTEXT;
+- обязательно верни sources;
+- если данных недостаточно,
+  скажи об этом;
+- не считай историю диалога
+  доказательством фактов
+  из документов.
 
-Не придумывай цитаты.
+TASK STATE:
 
-Каждая quote должна содержать
-chunk_id источника.
+{state_text}
 
-Верни только JSON следующего вида:
+RECENT HISTORY:
+
+{history_text}
+
+RAG CONTEXT:
+
+{rag_context}
+
+CURRENT QUESTION:
+
+{question}
+
+Верни только JSON:
 
 {{
   "status": "answered",
@@ -347,22 +721,8 @@ chunk_id источника.
       "section": "...",
       "chunk_id": "..."
     }}
-  ],
-  "quotes": [
-    {{
-      "chunk_id": "...",
-      "quote": "..."
-    }}
   ]
 }}
-
-CONTEXT:
-
-{context}
-
-QUESTION:
-
-{question}
 """.strip()
 
     response = client.models.generate_content(
@@ -378,48 +738,57 @@ QUESTION:
         )
     )
 
-    return json.loads(response.text)
+    try:
+        return json.loads(
+            response.text
+        )
+
+    except (
+        json.JSONDecodeError,
+        TypeError
+    ):
+
+        return {
+            "status": "error",
+            "answer": (
+                "Не удалось получить "
+                "структурированный ответ."
+            ),
+            "sources": []
+        }
 
 
 # ============================================================
-# VALIDATION
+# SOURCE VALIDATION
 # ============================================================
 
-def validate_answer(
+def validate_sources(
     result: dict,
     chunks: list[dict]
 ) -> dict:
 
-    errors = []
+    if result.get(
+        "status"
+    ) == "unknown":
 
-    if not result.get("answer"):
-        errors.append(
-            "Ответ отсутствует."
-        )
+        return {
+            "valid": True,
+            "errors": []
+        }
+
+    errors = []
 
     sources = result.get(
         "sources",
         []
     )
 
-    quotes = result.get(
-        "quotes",
-        []
-    )
-
     if not sources:
-        errors.append(
-            "Источники отсутствуют."
-        )
 
-    if not quotes:
         errors.append(
-            "Цитаты отсутствуют."
+            "В ответе отсутствуют "
+            "источники."
         )
-
-    # --------------------------------------------------------
-    # Allowed chunks
-    # --------------------------------------------------------
 
     chunk_map = {
         chunk["metadata"].get(
@@ -427,10 +796,6 @@ def validate_answer(
         ): chunk
         for chunk in chunks
     }
-
-    # --------------------------------------------------------
-    # Validate sources
-    # --------------------------------------------------------
 
     for source in sources:
 
@@ -441,13 +806,13 @@ def validate_answer(
         if chunk_id not in chunk_map:
 
             errors.append(
-                f"Неизвестный source "
-                f"chunk_id: {chunk_id}"
+                f"Неизвестный chunk_id: "
+                f"{chunk_id}"
             )
 
             continue
 
-        real_metadata = (
+        metadata = (
             chunk_map[
                 chunk_id
             ]["metadata"]
@@ -455,69 +820,21 @@ def validate_answer(
 
         if (
             source.get("source")
-            != real_metadata.get("source")
+            != metadata.get("source")
         ):
+
             errors.append(
-                f"Неверный source для "
+                f"Неверный source: "
                 f"{chunk_id}"
             )
 
         if (
             source.get("section")
-            != real_metadata.get("section")
+            != metadata.get("section")
         ):
-            errors.append(
-                f"Неверный section для "
-                f"{chunk_id}"
-            )
-
-    # --------------------------------------------------------
-    # Validate quotes
-    # --------------------------------------------------------
-
-    for quote_item in quotes:
-
-        chunk_id = quote_item.get(
-            "chunk_id"
-        )
-
-        quote = (
-            quote_item.get(
-                "quote",
-                ""
-            )
-            .strip()
-        )
-
-        if chunk_id not in chunk_map:
 
             errors.append(
-                f"Цитата с неизвестным "
-                f"chunk_id: {chunk_id}"
-            )
-
-            continue
-
-        original_text = (
-            chunk_map[
-                chunk_id
-            ]["text"]
-        )
-
-        if not quote:
-
-            errors.append(
-                f"Пустая цитата: "
-                f"{chunk_id}"
-            )
-
-            continue
-
-        if quote not in original_text:
-
-            errors.append(
-                f"Цитата не найдена "
-                f"дословно в chunk: "
+                f"Неверный section: "
                 f"{chunk_id}"
             )
 
@@ -528,143 +845,88 @@ def validate_answer(
 
 
 # ============================================================
-# PRINT RETRIEVAL
+# PRINT
 # ============================================================
 
-def print_chunks(
-    title: str,
-    chunks: list[dict]
-):
-
-    print()
-    print("=" * 60)
-    print(title)
-    print("=" * 60)
-
-    if not chunks:
-
-        print()
-        print(
-            "Релевантные chunks "
-            "не найдены."
-        )
-
-        return
-
-    for number, chunk in enumerate(
-        chunks,
-        start=1
-    ):
-
-        metadata = chunk["metadata"]
-
-        print()
-
-        print(
-            f"{number}. "
-            f"{metadata.get('title')}"
-        )
-
-        print(
-            f"   Section: "
-            f"{metadata.get('section')}"
-        )
-
-        print(
-            f"   Chunk ID: "
-            f"{metadata.get('chunk_id')}"
-        )
-
-        print(
-            f"   Similarity: "
-            f"{chunk['score']:.4f}"
-        )
-
-
-# ============================================================
-# PRINT ANSWER
-# ============================================================
-
-def print_answer(
+def print_sources(
     result: dict
 ):
-
-    print()
-    print("=" * 60)
-    print("ОТВЕТ")
-    print("=" * 60)
-
-    print()
-    print(
-        result.get(
-            "answer",
-            ""
-        )
-    )
 
     sources = result.get(
         "sources",
         []
     )
 
-    if sources:
+    print()
+    print("Источники:")
 
-        print()
-        print("=" * 60)
-        print("ИСТОЧНИКИ")
-        print("=" * 60)
+    if not sources:
 
-        for number, source in enumerate(
-            sources,
-            start=1
-        ):
+        print("  Нет.")
+        return
 
-            print()
+    for number, source in enumerate(
+        sources,
+        start=1
+    ):
 
-            print(
-                f"{number}. "
-                f"{source.get('source')}"
-            )
+        print(
+            f"  {number}. "
+            f"{source.get('source')}"
+        )
 
-            print(
-                f"   Section: "
-                f"{source.get('section')}"
-            )
+        print(
+            f"     Section: "
+            f"{source.get('section')}"
+        )
 
-            print(
-                f"   Chunk ID: "
-                f"{source.get('chunk_id')}"
-            )
+        print(
+            f"     Chunk ID: "
+            f"{source.get('chunk_id')}"
+        )
 
-    quotes = result.get(
-        "quotes",
-        []
+
+def print_task_state(
+    task_state: dict
+):
+
+    print()
+    print("=" * 60)
+    print("TASK STATE")
+    print("=" * 60)
+
+    print(
+        json.dumps(
+            task_state,
+            ensure_ascii=False,
+            indent=2
+        )
     )
 
-    if quotes:
 
-        print()
-        print("=" * 60)
-        print("ЦИТАТЫ")
-        print("=" * 60)
+# ============================================================
+# HELP
+# ============================================================
 
-        for number, quote in enumerate(
-            quotes,
-            start=1
-        ):
+def print_help():
 
-            print()
-
-            print(
-                f"{number}. "
-                f"[{quote.get('chunk_id')}]"
-            )
-
-            print(
-                f"   \""
-                f"{quote.get('quote')}"
-                f"\""
-            )
+    print()
+    print("Команды:")
+    print(
+        "  /help   - показать команды"
+    )
+    print(
+        "  /state  - показать task state"
+    )
+    print(
+        "  /history - показать историю"
+    )
+    print(
+        "  /clear  - очистить чат и state"
+    )
+    print(
+        "  /exit   - завершить работу"
+    )
 
 
 # ============================================================
@@ -675,9 +937,8 @@ def main():
 
     print("=" * 60)
     print(
-        "ДЕНЬ 24 — ЦИТАТЫ, "
-        "ИСТОЧНИКИ И "
-        "АНТИ-ГАЛЛЮЦИНАЦИИ"
+        "ДЕНЬ 25 — MINI RAG CHAT "
+        "+ TASK MEMORY"
     )
     print("=" * 60)
 
@@ -689,165 +950,229 @@ def main():
         print(error)
         return
 
-    print()
-    print(
-        f"Index: {INDEX_FILE}"
+    DATA_DIR.mkdir(
+        parents=True,
+        exist_ok=True
     )
 
+    history = load_history()
+    task_state = load_task_state()
+
+    print()
     print(
-        f"Chunks: "
+        f"Index chunks: "
         f"{len(index['chunks'])}"
     )
 
     print(
-        f"Threshold: "
-        f"{SIMILARITY_THRESHOLD}"
-    )
-
-    print()
-
-    question = input(
-        "Ваш вопрос: "
-    ).strip()
-
-    if not question:
-        return
-
-    # --------------------------------------------------------
-    # QUERY REWRITE
-    # --------------------------------------------------------
-
-    rewritten_query = (
-        rewrite_query(question)
-    )
-
-    print()
-    print("=" * 60)
-    print("QUERY REWRITE")
-    print("=" * 60)
-
-    print()
-    print(
-        f"Original:\n"
-        f"{question}"
+        f"History messages: "
+        f"{len(history)}"
     )
 
     print()
     print(
-        f"Rewritten:\n"
-        f"{rewritten_query}"
+        "Введите /help "
+        "для списка команд."
     )
 
-    # --------------------------------------------------------
-    # SEARCH
-    # --------------------------------------------------------
+    # ========================================================
+    # CHAT LOOP
+    # ========================================================
 
-    candidates = search_chunks(
-        query=rewritten_query,
-        index=index,
-        top_k=
-            TOP_K_BEFORE_FILTER
-    )
-
-    print_chunks(
-        f"BEFORE FILTER "
-        f"(TOP-{TOP_K_BEFORE_FILTER})",
-        candidates
-    )
-
-    # --------------------------------------------------------
-    # FILTER
-    # --------------------------------------------------------
-
-    filtered = filter_chunks(
-        candidates
-    )
-
-    print_chunks(
-        "AFTER FILTER",
-        filtered
-    )
-
-    # --------------------------------------------------------
-    # ANTI-HALLUCINATION GATE
-    # --------------------------------------------------------
-
-    if should_abstain(filtered):
-
-        result = (
-            build_unknown_answer()
-        )
-
-        print_answer(result)
+    while True:
 
         print()
-        print("=" * 60)
-        print("ANTI-HALLUCINATION")
-        print("=" * 60)
+
+        user_message = input(
+            "Вы: "
+        ).strip()
+
+        if not user_message:
+            continue
+
+        # ----------------------------------------------------
+        # COMMANDS
+        # ----------------------------------------------------
+
+        if user_message == "/exit":
+
+            print(
+                "Чат завершён."
+            )
+            break
+
+        if user_message == "/help":
+
+            print_help()
+            continue
+
+        if user_message == "/state":
+
+            print_task_state(
+                task_state
+            )
+            continue
+
+        if user_message == "/history":
+
+            print()
+            print(
+                format_history(
+                    history
+                )
+            )
+
+            continue
+
+        if user_message == "/clear":
+
+            history = []
+            task_state = (
+                default_task_state()
+            )
+
+            save_history(
+                history
+            )
+
+            save_task_state(
+                task_state
+            )
+
+            print(
+                "История и task state "
+                "очищены."
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # UPDATE TASK MEMORY
+        # ----------------------------------------------------
+
+        task_state = update_task_state(
+            user_message=user_message,
+            history=history,
+            current_state=task_state
+        )
+
+        save_task_state(
+            task_state
+        )
+
+        # ----------------------------------------------------
+        # CONTEXTUAL QUERY
+        # ----------------------------------------------------
+
+        rewritten_query = (
+            rewrite_query(
+                question=user_message,
+                history=history,
+                task_state=task_state
+            )
+        )
+
+        # ----------------------------------------------------
+        # RAG
+        # ----------------------------------------------------
+
+        candidates = search_chunks(
+            query=rewritten_query,
+            index=index
+        )
+
+        chunks = filter_chunks(
+            candidates
+        )
+
+        # ----------------------------------------------------
+        # ANSWER
+        # ----------------------------------------------------
+
+        result = generate_answer(
+            question=user_message,
+            history=history,
+            task_state=task_state,
+            chunks=chunks
+        )
+
+        validation = (
+            validate_sources(
+                result,
+                chunks
+            )
+        )
+
+        # ----------------------------------------------------
+        # PRINT
+        # ----------------------------------------------------
 
         print()
         print(
-            "Ответ LLM не генерировался, "
-            "потому что релевантность "
-            "контекста ниже порога."
+            f"Поисковый запрос: "
+            f"{rewritten_query}"
         )
-
-        return
-
-    # --------------------------------------------------------
-    # GENERATE
-    # --------------------------------------------------------
-
-    result = (
-        generate_grounded_answer(
-            question,
-            filtered
-        )
-    )
-
-    # --------------------------------------------------------
-    # VALIDATE
-    # --------------------------------------------------------
-
-    validation = validate_answer(
-        result,
-        filtered
-    )
-
-    print_answer(result)
-
-    print()
-    print("=" * 60)
-    print("VALIDATION")
-    print("=" * 60)
-
-    print()
-
-    print(
-        f"Sources present: "
-        f"{bool(result.get('sources'))}"
-    )
-
-    print(
-        f"Quotes present: "
-        f"{bool(result.get('quotes'))}"
-    )
-
-    print(
-        f"Validation passed: "
-        f"{validation['valid']}"
-    )
-
-    if validation["errors"]:
 
         print()
+        print(
+            f"Найдено chunks: "
+            f"{len(chunks)}"
+        )
 
-        for error in (
-            validation["errors"]
-        ):
-            print(
-                f"- {error}"
+        print()
+        print(
+            "Ассистент:"
+        )
+
+        print(
+            result.get(
+                "answer",
+                ""
             )
+        )
+
+        print_sources(
+            result
+        )
+
+        if not validation["valid"]:
+
+            print()
+            print(
+                "Ошибка проверки "
+                "источников:"
+            )
+
+            for error in (
+                validation["errors"]
+            ):
+
+                print(
+                    f"  - {error}"
+                )
+
+        # ----------------------------------------------------
+        # SAVE HISTORY
+        # ----------------------------------------------------
+
+        add_message(
+            history,
+            "user",
+            user_message
+        )
+
+        add_message(
+            history,
+            "assistant",
+            result.get(
+                "answer",
+                ""
+            )
+        )
+
+        save_history(
+            history
+        )
 
 
 if __name__ == "__main__":

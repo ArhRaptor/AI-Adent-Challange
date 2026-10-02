@@ -1,44 +1,24 @@
-# День 24 — Цитаты, источники и анти-галлюцинации
+# День 25 — Мини-чат с RAG + памятью
 
 ## Цель
 
-Доработать RAG-систему так, чтобы каждый содержательный ответ был проверяемым.
+Создать мини-чат, который объединяет:
 
-Теперь система должна возвращать:
+- историю диалога;
+- RAG-поиск по локальной базе;
+- contextual query rewrite;
+- фильтрацию по similarity;
+- источники в ответах;
+- task memory;
+- сохранение состояния между запусками.
 
-```text
-Answer
-+
-Sources
-+
-Quotes
-```
-
-При этом источники и цитаты не просто запрашиваются у LLM — они дополнительно проверяются программно.
-
-Также добавлен режим отказа от ответа:
-
-```text
-низкая релевантность
-        ↓
-"Не знаю"
-        ↓
-просьба уточнить вопрос
-```
-
-Главная задача Дня 24:
-
-```text
-не просто получить ответ,
-а показать, на каких данных
-этот ответ основан
-```
+Теперь RAG работает не с одним независимым вопросом, а внутри продолжительного диалога.
 
 ---
 
-# Развитие RAG
+# Развитие проекта
 
-## День 21 — Indexing
+## День 21 — Document Indexing
 
 ```text
 Documents
@@ -80,28 +60,54 @@ Top-K Candidates
 Similarity Filter
     ↓
 Relevant Chunks
-    ↓
-LLM
 ```
 
-## День 24 — Grounded RAG
+## День 24 — Grounded Answers
 
 ```text
-Question
+Retrieve
     ↓
-Query Rewrite
-    ↓
-Retrieval
-    ↓
-Similarity Filter
+Filter
     ↓
 Relevance Gate
     ↓
-Grounded Generation
+Grounded Answer
     ↓
-Sources + Quotes
+Sources
     ↓
 Validation
+```
+
+## День 25 — Conversational RAG
+
+```text
+User Message
+     │
+     ├──────────────→ Conversation History
+     │
+     ↓
+Task Memory Update
+     │
+     ↓
+Contextual Query Rewrite
+     │
+     ↓
+RAG Retrieval
+     │
+     ↓
+Similarity Filter
+     │
+     ↓
+History + Task State + RAG Context
+     │
+     ↓
+LLM
+     │
+     ↓
+Answer + Sources
+     │
+     ↓
+Save History
 ```
 
 ---
@@ -114,6 +120,7 @@ Validation
 ├── index_documents.py
 ├── control_questions.json
 ├── README.md
+├── .gitignore
 │
 ├── documents/
 │   ├── README.md
@@ -128,122 +135,385 @@ Validation
 │   ├── compose_example.kt
 │   └── index_config_examples.json
 │
-└── indexes/
-    ├── index_fixed.json
-    └── index_structured.json
+├── indexes/
+│   ├── index_fixed.json
+│   └── index_structured.json
+│
+└── data/
+    ├── chat_history.json
+    └── task_state.json
 ```
+
+`indexes/` и `data/` являются runtime/generated data и не обязаны храниться в Git.
 
 ---
 
-# Полная архитектура Day 24
+# Три вида памяти
+
+Главная идея Day 25 — разделить три разных источника контекста.
 
 ```text
-                         USER
-                           ↓
-                        QUESTION
-                           ↓
-                     Query Rewrite
-                           ↓
-                     Query Embedding
-                           ↓
-                      Local Index
-                           ↓
-                    Vector Retrieval
-                           ↓
-                    Top-8 Candidates
-                           ↓
-                   Similarity Filter
-                           ↓
-                      Top-4 max
-                           ↓
-                    Relevance Gate
-                           │
-                 ┌─────────┴─────────┐
-                 ↓                   ↓
-             relevant            insufficient
-                 ↓                   ↓
-         Build Context          "Не знаю"
-                 ↓                   ↓
-                LLM          Ask for clarification
-                 ↓
-         Structured JSON
-                 ↓
-      ┌──────────┼──────────┐
-      ↓          ↓          ↓
-    Answer    Sources     Quotes
-      └──────────┼──────────┘
-                 ↓
-             Validation
+Knowledge Memory
+Conversation Memory
+Task Memory
+```
+
+Они решают разные задачи.
+
+---
+
+## 1. Knowledge Memory — RAG
+
+Источником знаний служит:
+
+```text
+indexes/index_structured.json
+```
+
+Индекс содержит:
+
+```text
+chunk text
+metadata
+embedding
+```
+
+RAG отвечает на вопрос:
+
+```text
+Что написано в документах?
 ```
 
 ---
 
-# Настройки Retrieval
+## 2. Conversation Memory — History
 
-В проекте используются:
+История хранится в:
+
+```text
+data/chat_history.json
+```
+
+Пример:
+
+```json
+[
+  {
+    "role": "user",
+    "content": "Я хочу разобраться с RAG."
+  },
+  {
+    "role": "assistant",
+    "content": "..."
+  }
+]
+```
+
+History отвечает на вопрос:
+
+```text
+О чём мы недавно разговаривали?
+```
+
+Полная история сохраняется на диск.
+
+При этом в prompt передаётся только ограниченное окно:
 
 ```python
-TOP_K_BEFORE_FILTER = 8
-TOP_K_AFTER_FILTER = 4
-
-SIMILARITY_THRESHOLD = 0.45
+HISTORY_WINDOW = 8
 ```
 
-Сначала система получает до восьми кандидатов:
+Это предотвращает бесконечный рост prompt.
+
+---
+
+## 3. Task Memory — Task State
+
+Task state хранится отдельно:
 
 ```text
-Vector Search
-     ↓
-Top-8
+data/task_state.json
 ```
 
-После этого применяется threshold:
+Структура:
 
-```text
-score >= 0.45
+```json
+{
+  "goal": "",
+  "clarifications": [],
+  "constraints": [],
+  "terms": {}
+}
 ```
 
-И только после фильтра выбирается максимум:
+Task State отвечает на вопросы:
 
 ```text
-Top-4
+Какая сейчас цель?
+
+Что пользователь уже уточнил?
+
+Какие ограничения действуют?
+
+Какие термины были определены?
 ```
 
 ---
 
-# Query Rewrite
+# Почему History и Task State разделены
 
-Пользовательский вопрос сначала преобразуется в более подходящую формулировку для semantic search.
+История — это последовательность сообщений:
 
-Функция:
+```text
+Message 1
+Message 2
+Message 3
+...
+Message 20
+```
+
+Но в prompt используется только часть:
+
+```text
+last 8 messages
+```
+
+Поэтому важная информация из начала разговора может выйти за пределы окна.
+
+Например:
+
+```text
+Message 1:
+"Моя цель — улучшить retrieval."
+```
+
+После длинного разговора это сообщение может исчезнуть из recent history.
+
+Task state продолжает хранить:
+
+```json
+{
+  "goal": "Улучшить retrieval"
+}
+```
+
+Таким образом:
+
+```text
+History
+=
+что недавно происходило
+
+Task State
+=
+что важно помнить для задачи
+```
+
+---
+
+# Persistent Memory
+
+История и task state сохраняются на диск:
+
+```text
+data/chat_history.json
+data/task_state.json
+```
+
+Поэтому после:
+
+```text
+/exit
+```
+
+и повторного:
+
+```powershell
+py main.py
+```
+
+состояние может быть загружено обратно.
+
+Получается:
+
+```text
+Chat
+ ↓
+Save
+ ↓
+Exit
+ ↓
+Restart
+ ↓
+Load
+ ↓
+Continue
+```
+
+---
+
+# Task State Update
+
+Перед каждым RAG-запросом вызывается:
+
+```python
+update_task_state()
+```
+
+Модель получает:
+
+```text
+Current Task State
++
+Recent History
++
+New User Message
+```
+
+и обновляет:
+
+```text
+goal
+clarifications
+constraints
+terms
+```
+
+---
+
+# Goal
+
+Поле:
+
+```json
+"goal"
+```
+
+хранит главную текущую цель диалога.
+
+Например:
+
+```json
+{
+  "goal": "Разобраться, как улучшить retrieval в RAG-системе"
+}
+```
+
+---
+
+# Clarifications
+
+Поле:
+
+```json
+"clarifications"
+```
+
+содержит важные уточнения пользователя.
+
+Например:
+
+```json
+{
+  "clarifications": [
+    "Для задачи важнее сохранение логической структуры"
+  ]
+}
+```
+
+---
+
+# Constraints
+
+Поле:
+
+```json
+"constraints"
+```
+
+хранит ограничения текущей задачи.
+
+Например:
+
+```json
+{
+  "constraints": [
+    "Использовать только локальный индекс"
+  ]
+}
+```
+
+---
+
+# Terms
+
+Пользователь может определить собственное значение термина.
+
+Например:
+
+```text
+Под retrieval я имею в виду
+поиск chunks до вызова LLM.
+```
+
+Task memory может сохранить:
+
+```json
+{
+  "terms": {
+    "retrieval": "поиск chunks до вызова LLM"
+  }
+}
+```
+
+Это помогает сохранять одинаковое значение термина на протяжении длинного разговора.
+
+---
+
+# Conversational Query Rewrite
+
+В обычном RAG пользователь задаёт самостоятельный вопрос:
+
+```text
+Какие недостатки есть у fixed chunking?
+```
+
+В чате follow-up может выглядеть так:
+
+```text
+А какие у него недостатки?
+```
+
+Сам по себе такой запрос плохо подходит для semantic search.
+
+Поэтому Day 25 использует:
 
 ```python
 rewrite_query()
 ```
 
+Модель получает:
+
+```text
+Current Question
++
+Recent History
++
+Task State
+```
+
+и строит самостоятельный поисковый запрос.
+
 Pipeline:
 
 ```text
-Original Question
-       ↓
-      LLM
-       ↓
-Rewritten Search Query
-```
-
-Rewrite используется только для поиска.
-
-Для генерации финального ответа сохраняется оригинальный вопрос пользователя.
-
-```text
-Original Question
-      │
-      ├──────────────→ Final Answer
-      │
-      ↓
-Query Rewrite
-      ↓
-Retrieval
+"А какие у него недостатки?"
+            ↓
+History + Task State
+            ↓
+Contextual Query Rewrite
+            ↓
+самостоятельный search query
 ```
 
 ---
@@ -253,212 +523,124 @@ Retrieval
 После rewriting создаётся query embedding.
 
 ```text
-Query
-  ↓
+Rewritten Query
+       ↓
 Embedding
-  ↓
-Vector
+       ↓
+Vector Search
 ```
 
-Затем embedding вопроса сравнивается с embeddings chunks локального индекса.
+Embedding сравнивается с embeddings chunks через cosine similarity.
 
-Используется cosine similarity:
+Сначала выбираются:
 
-```text
-                 A · B
-cos(A, B) = ----------------
-              ||A|| × ||B||
+```python
+TOP_K_BEFORE_FILTER = 8
 ```
 
-Где:
-
-```text
-A = query embedding
-B = chunk embedding
-```
+кандидатов.
 
 ---
 
 # Similarity Filtering
 
-Простой Top-K всегда способен вернуть несколько результатов.
-
-Но:
-
-```text
-best available result
-```
-
-не обязательно означает:
-
-```text
-relevant result
-```
-
-Поэтому после retrieval применяется:
+После retrieval применяется:
 
 ```python
-filter_chunks()
+SIMILARITY_THRESHOLD = 0.45
 ```
 
-Chunk остаётся только если:
+Остаются только chunks:
 
 ```text
 similarity >= threshold
 ```
 
----
-
-# Relevance Gate
-
-После filtering выполняется дополнительная проверка:
+После этого используется максимум:
 
 ```python
-should_abstain()
+TOP_K_AFTER_FILTER = 4
 ```
 
-Она решает:
+Полный retrieval:
 
 ```text
-можно ли вообще отвечать
+Query
+  ↓
+Embedding
+  ↓
+All Chunks
+  ↓
+Top-8
+  ↓
+Similarity Filter
+  ↓
+Top-4 max
 ```
 
-Архитектура:
+Значение threshold является экспериментальным и должно оцениваться по реальным similarity scores проекта.
+
+---
+
+# Формирование ответа
+
+Для генерации ответа модель получает три блока:
 
 ```text
-Filtered Chunks
-       ↓
-Relevance Gate
-       │
-   ┌───┴───┐
-   ↓       ↓
- strong   weak
-   ↓       ↓
-  LLM   "Не знаю"
+TASK STATE
+
+RECENT HISTORY
+
+RAG CONTEXT
+```
+
+и текущий вопрос:
+
+```text
+CURRENT QUESTION
+```
+
+Получается:
+
+```text
+Task State
+     │
+History
+     ├────→ LLM → Answer
+RAG  │
+     │
+Question
 ```
 
 ---
 
-# Почему Relevance Gate находится до LLM
+# Разделение ролей контекста
 
-Можно было написать в prompt:
+Task State и History используются для понимания разговора.
 
-```text
-Если данных мало — скажи "не знаю".
-```
+RAG Context используется как источник фактической информации из локальных документов.
 
-Но это оставляет решение за генеративной моделью.
-
-В проекте используется более строгий подход:
+Важно:
 
 ```text
-Python проверяет relevance
-        ↓
-если context слабый
-        ↓
-LLM вообще не вызывается
+History != Knowledge Base
 ```
 
-Это уменьшает вероятность того, что модель попытается ответить на основе собственных знаний при отсутствии данных в локальной базе.
+То, что пользователь или ассистент ранее что-то сказал, само по себе не превращает это утверждение в факт из документов.
 
 ---
 
-# Режим «Не знаю»
+# Источники
 
-Если подходящего контекста нет, система возвращает:
-
-```text
-Не знаю. В локальной базе недостаточно
-релевантной информации.
-Пожалуйста, уточните вопрос.
-```
-
-Структурно:
-
-```json
-{
-  "status": "unknown",
-  "answer": "Не знаю...",
-  "sources": [],
-  "quotes": []
-}
-```
-
-Пустые `sources` и `quotes` здесь являются ожидаемым поведением.
-
-Система сознательно не формирует содержательный ответ, который потребовал бы доказательств.
-
----
-
-# Grounded Generation
-
-Если context достаточно релевантен, найденные chunks передаются LLM.
-
-Prompt требует использовать:
+Содержательный RAG-ответ должен возвращать:
 
 ```text
-ТОЛЬКО CONTEXT
-```
-
-и запрещает добавлять факты, которых нет в retrieved chunks.
-
-Модель должна вернуть структурированный результат.
-
----
-
-# Формат ответа
-
-LLM возвращает JSON:
-
-```json
-{
-  "status": "answered",
-  "answer": "...",
-  "sources": [
-    {
-      "source": "...",
-      "section": "...",
-      "chunk_id": "..."
-    }
-  ],
-  "quotes": [
-    {
-      "chunk_id": "...",
-      "quote": "..."
-    }
-  ]
-}
-```
-
-Таким образом ответ состоит из трёх основных частей:
-
-```text
-ANSWER
+Answer
 +
-SOURCES
-+
-QUOTES
+Sources
 ```
 
----
-
-# Answer
-
-Поле:
-
-```json
-"answer"
-```
-
-содержит ответ на исходный вопрос пользователя.
-
-Ответ должен основываться только на retrieved context.
-
----
-
-# Sources
-
-Каждый источник содержит:
+Каждый source содержит:
 
 ```text
 source
@@ -468,700 +650,498 @@ chunk_id
 
 Пример:
 
-```json
-{
-  "source": "documents/rag_notes.md",
-  "section": "Retrieval",
-  "chunk_id": "rag_notes.md::structured::0004"
-}
-```
-
-Это позволяет определить точное происхождение информации.
-
----
-
-# Почему одного имени файла недостаточно
-
-Источник вида:
-
-```text
-rag_notes.md
-```
-
-может содержать много разных разделов.
-
-Поэтому используется более точная ссылка:
-
-```text
-source
-+
-section
-+
-chunk_id
-```
-
-Например:
-
 ```text
 documents/rag_notes.md
 
 Section:
 Retrieval
 
-Chunk:
+Chunk ID:
 rag_notes.md::structured::0004
 ```
 
 ---
 
-# Quotes
+# Source Validation
 
-Кроме источника модель обязана вернуть короткие цитаты.
-
-Формат:
-
-```json
-{
-  "chunk_id": "rag_notes.md::structured::0004",
-  "quote": "..."
-}
-```
-
-Цитата должна быть взята непосредственно из retrieved chunk.
-
----
-
-# Зачем нужны цитаты
-
-Источник показывает:
-
-```text
-где искать доказательство
-```
-
-Цитата показывает:
-
-```text
-какой конкретно текст
-используется как доказательство
-```
-
-Получается:
-
-```text
-Answer
-   ↓
-Claim
-   ↓
-Quote
-   ↓
-Chunk ID
-   ↓
-Source Document
-```
-
----
-
-# Anti-Hallucination Validation
-
-Одной инструкции в prompt недостаточно.
-
-LLM теоретически может:
-
-```text
-придумать source
-придумать chunk_id
-изменить quote
-создать quote, которой нет в документе
-```
-
-Поэтому после генерации запускается:
+После генерации вызывается:
 
 ```python
-validate_answer()
+validate_sources()
 ```
 
----
-
-# Проверка наличия ответа
-
-Проверяется:
-
-```python
-result.get("answer")
-```
-
-Если answer отсутствует:
-
-```text
-Validation Error
-```
-
----
-
-# Проверка Sources
-
-Сначала создаётся карта реально retrieved chunks:
-
-```python
-chunk_map = {
-    chunk_id: chunk
-}
-```
-
-После этого каждый source из ответа проверяется.
-
-Если модель указала:
-
-```text
-rag_notes.md::structured::9999
-```
-
-а такого retrieved chunk нет:
-
-```text
-Validation Error
-```
-
----
-
-# Проверка Source Metadata
-
-Даже существующий `chunk_id` недостаточен.
-
-Дополнительно сравниваются:
-
-```text
-source
-section
-```
-
-с реальными metadata chunk.
-
-Таким образом модель не может корректно пройти validation, просто указав существующий ID с выдуманными metadata.
-
----
-
-# Проверка Quotes
-
-Самая строгая проверка выполняется для цитат.
-
-Для каждой цитаты:
-
-```python
-if quote not in original_text:
-```
-
-Если строка отсутствует в исходном retrieved chunk:
-
-```text
-Validation Error
-```
-
-То есть цитата должна существовать в документе дословно.
-
----
-
-# Пример
-
-LLM возвращает:
-
-```json
-{
-  "chunk_id": "rag_notes.md::structured::0004",
-  "quote": "Chunk overlap preserves context."
-}
-```
-
-Python получает настоящий текст:
-
-```text
-chunk["text"]
-```
-
-и проверяет:
-
-```text
-"Chunk overlap preserves context."
-        IN
-original chunk text
-```
-
-Если строки нет, цитата считается неподтверждённой.
-
----
-
-# Validation Result
-
-В консоли выводится:
-
-```text
-Sources present: ...
-Quotes present: ...
-Validation passed: ...
-```
-
-Если обнаружены ошибки, они выводятся отдельно.
-
-Например:
-
-```text
-Validation passed: False
-
-- Неизвестный source chunk_id: ...
-- Цитата не найдена дословно в chunk: ...
-```
-
----
-
-# Что Validation действительно гарантирует
-
-Программная проверка может определить:
+Программа проверяет:
 
 ```text
 есть ли sources
-есть ли quotes
+
 существует ли chunk_id
+среди retrieved chunks
+
 совпадает ли source
+
 совпадает ли section
-существует ли quote дословно в chunk
 ```
 
-Это детерминированные проверки.
+Таким образом LLM не должна использовать источник, который отсутствовал в RAG context.
 
 ---
 
-# Что Validation пока не гарантирует
+# Режим "Не знаю"
 
-Текущая реализация не может строго доказать, что:
+Если после similarity filtering не осталось подходящих chunks:
 
 ```text
-весь смысл answer
-логически следует из quotes
+Retrieval
+    ↓
+Filter
+    ↓
+0 Relevant Chunks
 ```
 
-Например, цитата может быть настоящей, но модель может сделать из неё слишком сильный вывод.
-
-Поэтому semantic consistency:
+система возвращает:
 
 ```text
-Answer
-vs
-Quotes
+Не знаю. В локальной базе
+недостаточно релевантной информации.
+Пожалуйста, уточните вопрос.
 ```
 
-проверяется отдельно на контрольных вопросах.
-
-Это важное различие между:
+В таком случае:
 
 ```text
-Citation Validation
+Источники:
+Нет.
+```
+
+Это корректнее, чем прикреплять нерелевантный или выдуманный источник.
+
+---
+
+# CLI
+
+Основной интерфейс проекта — консольный чат.
+
+Запуск:
+
+```powershell
+py main.py
+```
+
+После запуска пользователь может вести продолжительный диалог:
+
+```text
+Вы: ...
+
+Ассистент:
+...
+
+Источники:
+...
+```
+
+---
+
+# Команды
+
+## `/help`
+
+Показывает доступные команды.
+
+```text
+/help
+```
+
+## `/state`
+
+Показывает текущую task memory:
+
+```text
+/state
+```
+
+## `/history`
+
+Показывает recent conversation history:
+
+```text
+/history
+```
+
+## `/clear`
+
+Удаляет текущую историю и task state:
+
+```text
+/clear
+```
+
+## `/exit`
+
+Завершает приложение:
+
+```text
+/exit
+```
+
+---
+
+# Первый длинный сценарий
+
+Перед тестированием:
+
+```text
+/clear
+```
+
+Сценарий:
+
+```text
+1. Я хочу разобраться, как улучшить retrieval в RAG-системе.
+
+2. Начнем с chunking. Какие варианты есть в нашей базе?
+
+3. Чем fixed chunking отличается от structured?
+
+4. А какой недостаток у fixed подхода?
+
+5. Зачем тогда нужен overlap?
+
+6. Считай, что для нашей задачи важнее сохранение логической структуры.
+
+7. Какие преимущества тогда дает structured chunking?
+
+8. Но что делать, если section получился слишком большим?
+
+9. Теперь перейдем к embeddings.
+
+10. Как они участвуют в retrieval?
+
+11. А similarity какую роль здесь играет?
+
+12. С учетом всего, что мы обсудили, какая сейчас цель нашего диалога?
+```
+
+После этого:
+
+```text
+/state
+```
+
+позволяет проверить, сохранилась ли первоначальная цель и важные ограничения.
+
+---
+
+# Второй длинный сценарий
+
+После:
+
+```text
+/clear
+```
+
+можно проверить другой диалог:
+
+```text
+1. Я хочу спроектировать агента для работы с технической базой знаний.
+
+2. Он должен использовать RAG.
+
+3. Источники должны выводиться в каждом содержательном ответе.
+
+4. Под памятью будем понимать отдельно историю и task state.
+
+5. Зачем нам вообще task state?
+
+6. Чем он отличается от истории?
+
+7. Допустим история ограничена последними 8 сообщениями.
+
+8. Что произойдет со старыми деталями?
+
+9. Поэтому цель задачи должна храниться отдельно.
+
+10. Какие еще ограничения стоит держать в task state?
+
+11. А термины пользователя зачем сохранять?
+
+12. Напомни, какие требования к агенту мы уже зафиксировали.
+
+13. Теперь свяжи это с RAG.
+
+14. Какая итоговая архитектура получается?
+```
+
+После этого:
+
+```text
+/state
+```
+
+проверяет сохранение цели и требований после длинного диалога.
+
+---
+
+# Что проверяем
+
+В двух длинных сценариях необходимо проверить:
+
+```text
+Conversation continuity
+Task goal preservation
+Constraint preservation
+Term preservation
+Contextual query rewrite
+RAG retrieval
+Similarity filtering
+Sources in answers
+Source validation
+Persistence
+```
+
+Особенно важны follow-up вопросы:
+
+```text
+А какие у него недостатки?
+```
+
+```text
+А зачем он нужен?
+```
+
+```text
+А что делать в таком случае?
+```
+
+Они проверяют, способен ли query rewrite восстановить смысл из истории и task state.
+
+---
+
+# Проверка Persistence
+
+После нескольких сообщений:
+
+```text
+/exit
+```
+
+Запускаем приложение снова:
+
+```powershell
+py main.py
+```
+
+Затем:
+
+```text
+/state
 ```
 
 и:
 
 ```text
-Semantic Grounding Evaluation
+/history
 ```
+
+Task state и история должны загружаться из JSON-файлов.
 
 ---
 
-# Контрольный набор
+# Runtime Files
 
-Используется:
-
-```text
-control_questions.json
-```
-
-с 10 вопросами, созданными на предыдущем этапе.
-
-Для каждого вопроса уже определены:
+Приложение автоматически создаёт:
 
 ```text
-question
-expected
-expected_sources
+data/chat_history.json
+data/task_state.json
 ```
 
-На Дне 24 этот же набор используется для проверки grounded answers.
+Эти файлы не требуется создавать вручную.
+
+Они содержат состояние конкретного запуска/диалога и могут быть исключены из Git.
 
 ---
 
-# Что проверяем на 10 вопросах
+# Индекс
 
-Для каждого содержательного ответа проверяются:
-
-```text
-1. Есть ли answer?
-
-2. Есть ли sources?
-
-3. Реальны ли source / section / chunk_id?
-
-4. Есть ли quotes?
-
-5. Существуют ли quotes дословно
-   в соответствующих chunks?
-
-6. Подтверждают ли quotes
-   смысл answer?
-```
-
-Первые пять пунктов могут проверяться программно полностью или частично.
-
-Последний требует semantic evaluation.
-
----
-
-# Проверка №1 — Chunk Overlap
-
-Вопрос:
-
-```text
-Зачем используется overlap между chunks?
-```
-
-Ожидается, что retrieval найдёт информацию о chunking.
-
-Ответ должен содержать:
-
-```text
-Answer
-Sources
-Quotes
-```
-
-В конце ожидается validation report.
-
----
-
-# Проверка №2 — Metadata
-
-Вопрос:
-
-```text
-Какие metadata сохраняются
-для каждого chunk?
-```
-
-Ожидаемый смысл:
-
-```text
-source
-title
-section
-chunk_id
-strategy
-```
-
-Теперь недостаточно просто перечислить эти поля.
-
-Система должна показать документы и цитаты, которыми этот ответ подтверждается.
-
----
-
-# Проверка №3 — нерелевантный вопрос
-
-Например:
-
-```text
-Как приготовить борщ?
-```
-
-Локальная база посвящена техническим материалам и не предназначена для рецептов.
-
-При отсутствии chunks выше откалиброванного threshold система должна перейти в:
-
-```text
-status = unknown
-```
-
-и ответить:
-
-```text
-Не знаю.
-В локальной базе недостаточно
-релевантной информации.
-Пожалуйста, уточните вопрос.
-```
-
-При этом генерация grounded answer не выполняется.
-
----
-
-# Важность Threshold Calibration
-
-В проекте используется:
-
-```python
-SIMILARITY_THRESHOLD = 0.45
-```
-
-Это экспериментальное значение.
-
-Оно не является универсальным threshold для любых embedding models и любых документов.
-
-Порог следует оценивать на:
-
-```text
-релевантных вопросах
-+
-нерелевантных вопросах
-```
-
-Если нерелевантный вопрос проходит threshold, порог требует дополнительной настройки.
-
-Если хорошие вопросы постоянно отбрасываются, threshold может быть слишком высоким.
-
----
-
-# Три уровня защиты
-
-Day 24 использует три разных уровня.
-
-## Level 1 — Relevance Gate
-
-```text
-Weak Context
-    ↓
-STOP
-    ↓
-"Не знаю"
-```
-
-Не позволяет генерировать grounded answer при отсутствии достаточного контекста.
-
-## Level 2 — Grounded Prompt
-
-```text
-Strong Context
-    ↓
-LLM
-    ↓
-Use only retrieved information
-```
-
-Ограничивает модель retrieved context.
-
-## Level 3 — Deterministic Validation
-
-```text
-LLM Result
-    ↓
-Python
-    ↓
-Source Validation
-+
-Quote Validation
-```
-
-Проверяет структурированные доказательства после генерации.
-
----
-
-# Полный Anti-Hallucination Pipeline
-
-```text
-Question
-    ↓
-Rewrite
-    ↓
-Retrieve
-    ↓
-Filter
-    ↓
-Relevance Gate
-    │
-    ├──── weak ────→ "Не знаю"
-    │
-    ↓ strong
-Context
-    ↓
-Grounded Prompt
-    ↓
-LLM
-    ↓
-Answer + Sources + Quotes
-    ↓
-Source Validation
-    ↓
-Quote Validation
-    ↓
-Validated Result
-```
-
----
-
-# Запуск
-
-Если индекс уже существует:
-
-```powershell
-py main.py
-```
-
-Если индекс необходимо создать:
+Индекс создаётся отдельным скриптом:
 
 ```powershell
 py index_documents.py
 ```
 
-затем:
+Результат:
 
-```powershell
-py main.py
+```text
+indexes/index_fixed.json
+indexes/index_structured.json
 ```
+
+Основной чат использует:
+
+```text
+indexes/index_structured.json
+```
+
+Если индекс уже существует и документы не изменились, создавать его заново перед каждым запуском не требуется.
 
 ---
 
-# Что показать на видео
+# Git Ignore
 
-Для демонстрации удобно использовать три сценария.
+Генерируемые данные рекомендуется исключить:
 
-## 1. Grounded Answer
-
-```text
-Зачем используется overlap между chunks?
+```gitignore
+indexes/
+data/
+__pycache__/
+*.pyc
 ```
 
-Показать:
+При этом в Git остаются:
 
 ```text
-retrieval
-filter
-answer
-sources
-quotes
-validation
-```
-
-## 2. Project-specific Answer
-
-```text
-Какие metadata сохраняются
-для каждого chunk?
-```
-
-Показать связь:
-
-```text
-Answer
-→ Quote
-→ Chunk ID
-→ Source
-```
-
-## 3. Abstention
-
-```text
-Как приготовить борщ?
-```
-
-При отсутствии достаточно релевантного контекста показать:
-
-```text
-filter
-→ no relevant context
-→ "Не знаю"
-→ request clarification
-→ LLM answer generation skipped
+main.py
+index_documents.py
+control_questions.json
+README.md
+documents/
 ```
 
 ---
 
 # Что реализовано
 
-В Day 24 добавлены:
+В Day 25 реализованы:
 
-- обязательный structured answer;
-- список sources;
-- `source`;
-- `section`;
-- `chunk_id`;
-- обязательные quotes;
-- связь quote с chunk;
-- проверка существования source;
-- проверка source metadata;
-- проверка существования chunk_id;
-- дословная проверка quotes;
-- relevance gate;
+- CLI chat;
+- persistent conversation history;
+- ограниченное history window;
+- task memory;
+- goal;
+- clarifications;
+- constraints;
+- user-defined terms;
+- автоматическое обновление task state;
+- contextual query rewriting;
+- semantic retrieval;
+- similarity filtering;
+- RAG для каждого сообщения;
+- ответы с источниками;
+- source validation;
 - режим `unknown`;
-- ответ «Не знаю»;
-- просьба уточнить вопрос;
-- пропуск LLM generation при слабом context;
-- validation report;
-- повторное использование 10 контрольных вопросов.
+- сохранение состояния между запусками;
+- команды управления CLI.
+
+---
+
+# Production-like подход
+
+Проект разделяет разные типы состояния:
+
+```text
+Knowledge
+    ↓
+RAG Index
+
+Conversation
+    ↓
+Chat History
+
+Task
+    ↓
+Task State
+```
+
+Вместо передачи всей истории в каждый prompt используется:
+
+```text
+Recent History
++
+Compact Task State
++
+Retrieved Knowledge
+```
+
+Это позволяет лучше контролировать размер контекста и сохранять важную информацию длинного диалога.
+
+---
+
+# Итоговая архитектура
+
+```text
+                     USER
+                       ↓
+                  New Message
+                       │
+          ┌────────────┴────────────┐
+          ↓                         ↓
+   Conversation                 Task State
+      History                     Update
+          │                         │
+          └────────────┬────────────┘
+                       ↓
+             Contextual Rewrite
+                       ↓
+                 RAG Retrieval
+                       ↓
+               Similarity Filter
+                       ↓
+                Relevant Chunks
+                       │
+          ┌────────────┼────────────┐
+          ↓            ↓            ↓
+       History     Task State    RAG Context
+          └────────────┼────────────┘
+                       ↓
+                      LLM
+                       ↓
+               Answer + Sources
+                       ↓
+              Source Validation
+                       ↓
+                Save History
+```
 
 ---
 
 # Результат
 
-RAG теперь возвращает не просто текстовый ответ:
+Получен мини-чат с:
 
 ```text
-Answer
-```
-
-а проверяемую структуру:
-
-```text
-Answer
-   ↓
+RAG
++
+Conversation History
++
+Task Memory
++
+Contextual Query Rewrite
++
 Sources
-   ↓
-Sections
-   ↓
-Chunk IDs
-   ↓
-Quotes
++
+Persistence
 ```
 
-После этого Python проверяет, что доказательства действительно относятся к retrieved context.
+Система способна поддерживать многошаговый диалог, использовать локальную базу знаний и отдельно сохранять важное состояние текущей задачи.
 
----
-
-# Итог
-
-На предыдущих этапах RAG научился:
+Ключевая идея Day 25:
 
 ```text
-индексировать документы
-→ находить chunks
-→ фильтровать chunks
+History ≠ Task State ≠ Knowledge Base
 ```
 
-На Дне 24 добавлен следующий уровень:
+Каждый слой памяти имеет отдельную роль.
+
+Итоговый pipeline:
 
 ```text
-найти информацию
-        ↓
-ответить по информации
-        ↓
-показать доказательства
-        ↓
-проверить доказательства
-```
-
-Если подходящих доказательств нет:
-
-```text
-не генерировать неподтверждённый ответ
-```
-
-а перейти в безопасный режим:
-
-```text
-"Не знаю. Пожалуйста, уточните вопрос."
-```
-
-Итоговая архитектура:
-
-```text
-Retrieve
+Remember
+→ Rewrite
+→ Retrieve
 → Filter
-→ Gate
-→ Ground
+→ Answer
 → Cite
 → Validate
+→ Persist
 ```
