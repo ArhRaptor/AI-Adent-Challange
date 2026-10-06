@@ -1,1147 +1,514 @@
-# День 25 — Мини-чат с RAG + памятью
+# День 26 — Запуск локальной LLM
 
 ## Цель
 
-Создать мини-чат, который объединяет:
+Запустить Large Language Model локально на компьютере и проверить, что к ней можно обращаться без облачного LLM API.
 
-- историю диалога;
-- RAG-поиск по локальной базе;
-- contextual query rewrite;
-- фильтрацию по similarity;
-- источники в ответах;
-- task memory;
-- сохранение состояния между запусками.
+В рамках задания необходимо:
 
-Теперь RAG работает не с одним независимым вопросом, а внутри продолжительного диалога.
+- установить локальный LLM runtime;
+- скачать модель;
+- запустить модель локально;
+- проверить работу через CLI;
+- проверить работу через HTTP API;
+- выполнить минимум 3 запроса разной сложности;
+- оценить качество полученных ответов.
 
 ---
 
-# Развитие проекта
+# Используемые технологии
 
-## День 21 — Document Indexing
+Для эксперимента использовались:
 
 ```text
-Documents
-    ↓
-Chunking
-    ↓
-Embeddings
-    ↓
-Metadata
-    ↓
-Local Index
+Ollama
++
+Qwen2.5-Coder 0.5B
++
+Python
++
+HTTP API
 ```
 
-## День 22 — First RAG
+Модель:
 
 ```text
-Question
-    ↓
-Embedding
-    ↓
-Retrieval
-    ↓
-Top-K
-    ↓
-Context
-    ↓
-LLM
+qwen2.5-coder:0.5b
 ```
 
-## День 23 — Improved Retrieval
+Ollama предоставляет локальный HTTP API:
 
 ```text
-Question
-    ↓
-Query Rewrite
-    ↓
-Top-K Candidates
-    ↓
-Similarity Filter
-    ↓
-Relevant Chunks
+http://localhost:11434
 ```
 
-## День 24 — Grounded Answers
+Для генерации используется endpoint:
 
 ```text
-Retrieve
-    ↓
-Filter
-    ↓
-Relevance Gate
-    ↓
-Grounded Answer
-    ↓
-Sources
-    ↓
-Validation
-```
-
-## День 25 — Conversational RAG
-
-```text
-User Message
-     │
-     ├──────────────→ Conversation History
-     │
-     ↓
-Task Memory Update
-     │
-     ↓
-Contextual Query Rewrite
-     │
-     ↓
-RAG Retrieval
-     │
-     ↓
-Similarity Filter
-     │
-     ↓
-History + Task State + RAG Context
-     │
-     ↓
-LLM
-     │
-     ↓
-Answer + Sources
-     │
-     ↓
-Save History
+POST /api/generate
 ```
 
 ---
 
-# Структура проекта
+# Архитектура
 
 ```text
-.
-├── main.py
-├── index_documents.py
-├── control_questions.json
-├── README.md
-├── .gitignore
-│
-├── documents/
-│   ├── README.md
-│   ├── rag_notes.md
-│   ├── mcp_notes.md
-│   ├── android_architecture.md
-│   ├── agent_design.txt
-│   ├── chunking_comparison.md
-│   ├── python_services.md
-│   ├── software_architecture.md
-│   ├── indexer_example.py
-│   ├── compose_example.kt
-│   └── index_config_examples.json
-│
-├── indexes/
-│   ├── index_fixed.json
-│   └── index_structured.json
-│
-└── data/
-    ├── chat_history.json
-    └── task_state.json
+Python / PowerShell
+        ↓
+HTTP Request
+        ↓
+localhost:11434
+        ↓
+      Ollama
+        ↓
+qwen2.5-coder:0.5b
+        ↓
+Local Inference
+        ↓
+     Response
 ```
 
-`indexes/` и `data/` являются runtime/generated data и не обязаны храниться в Git.
+В отличие от предыдущих заданий с Gemini API, генерация выполняется локальной моделью через Ollama.
 
 ---
 
-# Три вида памяти
+# Проверка Ollama
 
-Главная идея Day 25 — разделить три разных источника контекста.
+Проверить установленную версию:
 
-```text
-Knowledge Memory
-Conversation Memory
-Task Memory
+```powershell
+ollama --version
 ```
 
-Они решают разные задачи.
+Посмотреть установленные модели:
 
----
-
-## 1. Knowledge Memory — RAG
-
-Источником знаний служит:
-
-```text
-indexes/index_structured.json
+```powershell
+ollama list
 ```
 
-Индекс содержит:
+Запустить модель через CLI:
 
-```text
-chunk text
-metadata
-embedding
-```
-
-RAG отвечает на вопрос:
-
-```text
-Что написано в документах?
+```powershell
+ollama run qwen2.5-coder:0.5b
 ```
 
 ---
 
-## 2. Conversation Memory — History
+# Проверка через CLI
 
-История хранится в:
+После запуска:
 
-```text
-data/chat_history.json
+```powershell
+ollama run qwen2.5-coder:0.5b
 ```
 
-Пример:
-
-```json
-[
-  {
-    "role": "user",
-    "content": "Я хочу разобраться с RAG."
-  },
-  {
-    "role": "assistant",
-    "content": "..."
-  }
-]
-```
-
-History отвечает на вопрос:
-
-```text
-О чём мы недавно разговаривали?
-```
-
-Полная история сохраняется на диск.
-
-При этом в prompt передаётся только ограниченное окно:
-
-```python
-HISTORY_WINDOW = 8
-```
-
-Это предотвращает бесконечный рост prompt.
-
----
-
-## 3. Task Memory — Task State
-
-Task state хранится отдельно:
-
-```text
-data/task_state.json
-```
-
-Структура:
-
-```json
-{
-  "goal": "",
-  "clarifications": [],
-  "constraints": [],
-  "terms": {}
-}
-```
-
-Task State отвечает на вопросы:
-
-```text
-Какая сейчас цель?
-
-Что пользователь уже уточнил?
-
-Какие ограничения действуют?
-
-Какие термины были определены?
-```
-
----
-
-# Почему History и Task State разделены
-
-История — это последовательность сообщений:
-
-```text
-Message 1
-Message 2
-Message 3
-...
-Message 20
-```
-
-Но в prompt используется только часть:
-
-```text
-last 8 messages
-```
-
-Поэтому важная информация из начала разговора может выйти за пределы окна.
+модели можно отправлять запросы непосредственно через консоль.
 
 Например:
 
 ```text
-Message 1:
-"Моя цель — улучшить retrieval."
+What is a local LLM? Answer in one sentence.
 ```
 
-После длинного разговора это сообщение может исчезнуть из recent history.
-
-Task state продолжает хранить:
-
-```json
-{
-  "goal": "Улучшить retrieval"
-}
-```
-
-Таким образом:
+Выход из CLI:
 
 ```text
-History
-=
-что недавно происходило
-
-Task State
-=
-что важно помнить для задачи
+/bye
 ```
 
 ---
 
-# Persistent Memory
+# Проверка HTTP API
 
-История и task state сохраняются на диск:
+Ollama позволяет обращаться к модели через локальный HTTP API.
 
-```text
-data/chat_history.json
-data/task_state.json
+Пример PowerShell-запроса:
+
+```powershell
+$body = @{
+    model = "qwen2.5-coder:0.5b"
+    prompt = "What is a local LLM? Answer in one sentence."
+    stream = $false
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod `
+    -Uri "http://localhost:11434/api/generate" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+
+$response.response
 ```
 
-Поэтому после:
+Полученный ответ:
 
 ```text
-/exit
+A local language model is a tool that can be run and used locally,
+allowing users to interact with a large and diverse set of text data.
 ```
 
-и повторного:
+Таким образом было подтверждено, что локальный HTTP API работает и модель возвращает сгенерированный ответ.
+
+---
+
+# Python-клиент
+
+Для автоматической проверки создан Python-скрипт.
+
+Дополнительные Python-библиотеки не требуются.
+
+Используется стандартный модуль:
+
+```python
+urllib.request
+```
+
+Адрес Ollama:
+
+```python
+OLLAMA_URL = "http://localhost:11434/api/generate"
+```
+
+Модель:
+
+```python
+MODEL = "qwen2.5-coder:0.5b"
+```
+
+Python формирует JSON:
+
+```json
+{
+  "model": "qwen2.5-coder:0.5b",
+  "prompt": "...",
+  "stream": false
+}
+```
+
+и отправляет его в локальный Ollama API.
+
+---
+
+# Запуск
 
 ```powershell
 py main.py
 ```
 
-состояние может быть загружено обратно.
-
-Получается:
-
-```text
-Chat
- ↓
-Save
- ↓
-Exit
- ↓
-Restart
- ↓
-Load
- ↓
-Continue
-```
+Программа автоматически выполняет три теста разной сложности.
 
 ---
 
-# Task State Update
+# Тест 1 — Простой вопрос
 
-Перед каждым RAG-запросом вызывается:
+Prompt:
+
+```text
+Объясни одним предложением, что такое LLM.
+```
+
+Время:
+
+```text
+1.66 сек.
+```
+
+Модель дала ответ на русском языке и попыталась объяснить понятие LLM.
+
+Ответ был понятен по общему смыслу, но содержал языковые неточности.
+
+Это показывает одно из ограничений очень маленькой модели размером 0.5B.
+
+---
+
+# Тест 2 — Логическая задача
+
+Prompt:
+
+```text
+У Маши 12 яблок.
+
+Она отдала треть яблок другу,
+а затем купила ещё 5.
+
+Сколько яблок стало у Маши?
+
+Кратко объясни вычисление.
+```
+
+Время:
+
+```text
+0.84 сек.
+```
+
+Модель дала неправильный ответ.
+
+Правильное вычисление:
+
+```text
+12 / 3 = 4
+
+12 - 4 = 8
+
+8 + 5 = 13
+```
+
+Правильный результат:
+
+```text
+13 яблок
+```
+
+Модель ошибочно посчитала, что после передачи трети осталось 6 яблок, а затем допустила дополнительные ошибки в рассуждении.
+
+Это показывает, что успешный локальный запуск LLM не гарантирует правильность её ответов.
+
+---
+
+# Тест 3 — Программирование
+
+Prompt:
+
+```text
+Напиши функцию Python is_even(number),
+которая возвращает True для чётного числа
+и False для нечётного.
+
+Добавь два примера использования.
+```
+
+Время:
+
+```text
+3.88 сек.
+```
+
+Модель правильно предложила основную реализацию:
 
 ```python
-update_task_state()
+def is_even(number):
+    return number % 2 == 0
 ```
 
-Модель получает:
-
-```text
-Current Task State
-+
-Recent History
-+
-New User Message
-```
-
-и обновляет:
-
-```text
-goal
-clarifications
-constraints
-terms
-```
-
----
-
-# Goal
-
-Поле:
-
-```json
-"goal"
-```
-
-хранит главную текущую цель диалога.
+Основная логика функции корректна.
 
 Например:
 
-```json
-{
-  "goal": "Разобраться, как улучшить retrieval в RAG-системе"
-}
+```python
+is_even(4)
 ```
 
----
-
-# Clarifications
-
-Поле:
-
-```json
-"clarifications"
-```
-
-содержит важные уточнения пользователя.
-
-Например:
-
-```json
-{
-  "clarifications": [
-    "Для задачи важнее сохранение логической структуры"
-  ]
-}
-```
-
----
-
-# Constraints
-
-Поле:
-
-```json
-"constraints"
-```
-
-хранит ограничения текущей задачи.
-
-Например:
-
-```json
-{
-  "constraints": [
-    "Использовать только локальный индекс"
-  ]
-}
-```
-
----
-
-# Terms
-
-Пользователь может определить собственное значение термина.
-
-Например:
+возвращает:
 
 ```text
-Под retrieval я имею в виду
-поиск chunks до вызова LLM.
+True
 ```
 
-Task memory может сохранить:
-
-```json
-{
-  "terms": {
-    "retrieval": "поиск chunks до вызова LLM"
-  }
-}
-```
-
-Это помогает сохранять одинаковое значение термина на протяжении длинного разговора.
-
----
-
-# Conversational Query Rewrite
-
-В обычном RAG пользователь задаёт самостоятельный вопрос:
-
-```text
-Какие недостатки есть у fixed chunking?
-```
-
-В чате follow-up может выглядеть так:
-
-```text
-А какие у него недостатки?
-```
-
-Сам по себе такой запрос плохо подходит для semantic search.
-
-Поэтому Day 25 использует:
+а:
 
 ```python
-rewrite_query()
+is_even(7)
 ```
 
-Модель получает:
+возвращает:
 
 ```text
-Current Question
-+
-Recent History
-+
-Task State
+False
 ```
 
-и строит самостоятельный поисковый запрос.
+При этом в расширенном ответе модель допустила несколько ошибок в комментариях к нечётным числам.
 
-Pipeline:
-
-```text
-"А какие у него недостатки?"
-            ↓
-History + Task State
-            ↓
-Contextual Query Rewrite
-            ↓
-самостоятельный search query
-```
-
----
-
-# Retrieval
-
-После rewriting создаётся query embedding.
-
-```text
-Rewritten Query
-       ↓
-Embedding
-       ↓
-Vector Search
-```
-
-Embedding сравнивается с embeddings chunks через cosine similarity.
-
-Сначала выбираются:
+Например, для:
 
 ```python
-TOP_K_BEFORE_FILTER = 8
+is_even(17)
+is_even(25)
+is_even(-25)
 ```
 
-кандидатов.
+функция фактически возвращает:
+
+```text
+False
+False
+False
+```
+
+хотя часть комментариев модели утверждала обратное.
+
+Это хороший пример того, почему сгенерированный LLM код и объяснения необходимо проверять.
 
 ---
 
-# Similarity Filtering
+# Результаты эксперимента
 
-После retrieval применяется:
+| Тест | Тип | Время | Результат |
+|---|---|---:|---|
+| 1 | Простой вопрос | 1.66 сек. | Ответ получен |
+| 2 | Логическая задача | 0.84 сек. | Ошибка reasoning |
+| 3 | Программирование | 3.88 сек. | Основная функция корректна |
 
-```python
-SIMILARITY_THRESHOLD = 0.45
-```
+Все три запроса были обработаны локальной моделью.
 
-Остаются только chunks:
-
-```text
-similarity >= threshold
-```
-
-После этого используется максимум:
-
-```python
-TOP_K_AFTER_FILTER = 4
-```
-
-Полный retrieval:
-
-```text
-Query
-  ↓
-Embedding
-  ↓
-All Chunks
-  ↓
-Top-8
-  ↓
-Similarity Filter
-  ↓
-Top-4 max
-```
-
-Значение threshold является экспериментальным и должно оцениваться по реальным similarity scores проекта.
+При этом качество ответов различается в зависимости от сложности задачи.
 
 ---
 
-# Формирование ответа
+# Что показал эксперимент
 
-Для генерации ответа модель получает три блока:
+## Локальный inference работает
 
-```text
-TASK STATE
-
-RECENT HISTORY
-
-RAG CONTEXT
-```
-
-и текущий вопрос:
+Модель успешно запускается через Ollama и отвечает без использования облачного LLM API.
 
 ```text
-CURRENT QUESTION
-```
-
-Получается:
-
-```text
-Task State
-     │
-History
-     ├────→ LLM → Answer
-RAG  │
-     │
-Question
+Python
+ ↓
+localhost
+ ↓
+Ollama
+ ↓
+Local Model
 ```
 
 ---
 
-# Разделение ролей контекста
+## HTTP API работает
 
-Task State и History используются для понимания разговора.
-
-RAG Context используется как источник фактической информации из локальных документов.
-
-Важно:
+Python и PowerShell могут обращаться к модели через:
 
 ```text
-History != Knowledge Base
+http://localhost:11434/api/generate
 ```
 
-То, что пользователь или ассистент ранее что-то сказал, само по себе не превращает это утверждение в факт из документов.
+Это позволяет использовать локальную LLM внутри собственных приложений.
 
 ---
 
-# Источники
+## Маленькая модель имеет ограничения
 
-Содержательный RAG-ответ должен возвращать:
-
-```text
-Answer
-+
-Sources
-```
-
-Каждый source содержит:
+Используемая модель:
 
 ```text
-source
-section
-chunk_id
+qwen2.5-coder:0.5b
 ```
 
-Пример:
+очень компактная.
 
-```text
-documents/rag_notes.md
+Она способна:
 
-Section:
-Retrieval
+- генерировать текст;
+- отвечать на простые вопросы;
+- писать простой код;
+- работать через локальный API.
 
-Chunk ID:
-rag_notes.md::structured::0004
-```
+Но эксперимент также показал проблемы:
+
+- ошибки reasoning;
+- неточности русского языка;
+- противоречия между кодом и комментариями;
+- неправильные вычисления.
 
 ---
 
-# Source Validation
+# Почему ошибки модели не являются ошибкой приложения
 
-После генерации вызывается:
-
-```python
-validate_sources()
-```
-
-Программа проверяет:
+Важно разделять два уровня:
 
 ```text
-есть ли sources
-
-существует ли chunk_id
-среди retrieved chunks
-
-совпадает ли source
-
-совпадает ли section
+Infrastructure
+vs
+Model Quality
 ```
 
-Таким образом LLM не должна использовать источник, который отсутствовал в RAG context.
+Инфраструктура успешно:
+
+```text
+запустила модель
+↓
+приняла HTTP request
+↓
+выполнила inference
+↓
+вернула response
+```
+
+Ошибочный математический ответ относится уже к качеству выбранной модели.
 
 ---
 
-# Режим "Не знаю"
+# Local LLM vs Cloud LLM
 
-Если после similarity filtering не осталось подходящих chunks:
-
-```text
-Retrieval
-    ↓
-Filter
-    ↓
-0 Relevant Chunks
-```
-
-система возвращает:
+В предыдущих заданиях запрос выглядел примерно так:
 
 ```text
-Не знаю. В локальной базе
-недостаточно релевантной информации.
-Пожалуйста, уточните вопрос.
+Python
+ ↓
+Internet
+ ↓
+Cloud API
+ ↓
+Gemini
 ```
 
-В таком случае:
+В Day 26:
 
 ```text
-Источники:
-Нет.
+Python
+ ↓
+localhost
+ ↓
+Ollama
+ ↓
+Local LLM
 ```
 
-Это корректнее, чем прикреплять нерелевантный или выдуманный источник.
+Локальный подход позволяет запускать inference непосредственно на компьютере пользователя.
+
+При этом требования к ресурсам компьютера растут вместе с размером модели.
 
 ---
 
-# CLI
+# Итог
 
-Основной интерфейс проекта — консольный чат.
-
-Запуск:
-
-```powershell
-py main.py
-```
-
-После запуска пользователь может вести продолжительный диалог:
+В Day 26 была успешно запущена локальная LLM:
 
 ```text
-Вы: ...
-
-Ассистент:
-...
-
-Источники:
-...
+qwen2.5-coder:0.5b
 ```
 
----
-
-# Команды
-
-## `/help`
-
-Показывает доступные команды.
+Проверены два способа взаимодействия:
 
 ```text
-/help
+CLI
+HTTP API
 ```
 
-## `/state`
+Дополнительно реализован Python-клиент для автоматического выполнения запросов.
 
-Показывает текущую task memory:
+Были выполнены три запроса разной сложности:
 
 ```text
-/state
+Simple Question
+Reasoning
+Programming
 ```
 
-## `/history`
-
-Показывает recent conversation history:
+Эксперимент показал:
 
 ```text
-/history
+Local LLM       → работает
+Ollama           → работает
+CLI              → работает
+HTTP API         → работает
+Python Client    → работает
+Simple Prompt    → ответ получен
+Reasoning        → модель ошиблась
+Programming      → основная логика корректна
 ```
 
-## `/clear`
+Главный вывод:
 
-Удаляет текущую историю и task state:
+> Локальный запуск LLM позволяет выполнять inference без облачного LLM API, однако качество результата напрямую зависит от возможностей выбранной модели.
 
-```text
-/clear
-```
-
-## `/exit`
-
-Завершает приложение:
-
-```text
-/exit
-```
-
----
-
-# Первый длинный сценарий
-
-Перед тестированием:
-
-```text
-/clear
-```
-
-Сценарий:
-
-```text
-1. Я хочу разобраться, как улучшить retrieval в RAG-системе.
-
-2. Начнем с chunking. Какие варианты есть в нашей базе?
-
-3. Чем fixed chunking отличается от structured?
-
-4. А какой недостаток у fixed подхода?
-
-5. Зачем тогда нужен overlap?
-
-6. Считай, что для нашей задачи важнее сохранение логической структуры.
-
-7. Какие преимущества тогда дает structured chunking?
-
-8. Но что делать, если section получился слишком большим?
-
-9. Теперь перейдем к embeddings.
-
-10. Как они участвуют в retrieval?
-
-11. А similarity какую роль здесь играет?
-
-12. С учетом всего, что мы обсудили, какая сейчас цель нашего диалога?
-```
-
-После этого:
-
-```text
-/state
-```
-
-позволяет проверить, сохранилась ли первоначальная цель и важные ограничения.
-
----
-
-# Второй длинный сценарий
-
-После:
-
-```text
-/clear
-```
-
-можно проверить другой диалог:
-
-```text
-1. Я хочу спроектировать агента для работы с технической базой знаний.
-
-2. Он должен использовать RAG.
-
-3. Источники должны выводиться в каждом содержательном ответе.
-
-4. Под памятью будем понимать отдельно историю и task state.
-
-5. Зачем нам вообще task state?
-
-6. Чем он отличается от истории?
-
-7. Допустим история ограничена последними 8 сообщениями.
-
-8. Что произойдет со старыми деталями?
-
-9. Поэтому цель задачи должна храниться отдельно.
-
-10. Какие еще ограничения стоит держать в task state?
-
-11. А термины пользователя зачем сохранять?
-
-12. Напомни, какие требования к агенту мы уже зафиксировали.
-
-13. Теперь свяжи это с RAG.
-
-14. Какая итоговая архитектура получается?
-```
-
-После этого:
-
-```text
-/state
-```
-
-проверяет сохранение цели и требований после длинного диалога.
-
----
-
-# Что проверяем
-
-В двух длинных сценариях необходимо проверить:
-
-```text
-Conversation continuity
-Task goal preservation
-Constraint preservation
-Term preservation
-Contextual query rewrite
-RAG retrieval
-Similarity filtering
-Sources in answers
-Source validation
-Persistence
-```
-
-Особенно важны follow-up вопросы:
-
-```text
-А какие у него недостатки?
-```
-
-```text
-А зачем он нужен?
-```
-
-```text
-А что делать в таком случае?
-```
-
-Они проверяют, способен ли query rewrite восстановить смысл из истории и task state.
-
----
-
-# Проверка Persistence
-
-После нескольких сообщений:
-
-```text
-/exit
-```
-
-Запускаем приложение снова:
-
-```powershell
-py main.py
-```
-
-Затем:
-
-```text
-/state
-```
-
-и:
-
-```text
-/history
-```
-
-Task state и история должны загружаться из JSON-файлов.
-
----
-
-# Runtime Files
-
-Приложение автоматически создаёт:
-
-```text
-data/chat_history.json
-data/task_state.json
-```
-
-Эти файлы не требуется создавать вручную.
-
-Они содержат состояние конкретного запуска/диалога и могут быть исключены из Git.
-
----
-
-# Индекс
-
-Индекс создаётся отдельным скриптом:
-
-```powershell
-py index_documents.py
-```
-
-Результат:
-
-```text
-indexes/index_fixed.json
-indexes/index_structured.json
-```
-
-Основной чат использует:
-
-```text
-indexes/index_structured.json
-```
-
-Если индекс уже существует и документы не изменились, создавать его заново перед каждым запуском не требуется.
-
----
-
-# Git Ignore
-
-Генерируемые данные рекомендуется исключить:
-
-```gitignore
-indexes/
-data/
-__pycache__/
-*.pyc
-```
-
-При этом в Git остаются:
-
-```text
-main.py
-index_documents.py
-control_questions.json
-README.md
-documents/
-```
-
----
-
-# Что реализовано
-
-В Day 25 реализованы:
-
-- CLI chat;
-- persistent conversation history;
-- ограниченное history window;
-- task memory;
-- goal;
-- clarifications;
-- constraints;
-- user-defined terms;
-- автоматическое обновление task state;
-- contextual query rewriting;
-- semantic retrieval;
-- similarity filtering;
-- RAG для каждого сообщения;
-- ответы с источниками;
-- source validation;
-- режим `unknown`;
-- сохранение состояния между запусками;
-- команды управления CLI.
-
----
-
-# Production-like подход
-
-Проект разделяет разные типы состояния:
-
-```text
-Knowledge
-    ↓
-RAG Index
-
-Conversation
-    ↓
-Chat History
-
-Task
-    ↓
-Task State
-```
-
-Вместо передачи всей истории в каждый prompt используется:
-
-```text
-Recent History
-+
-Compact Task State
-+
-Retrieved Knowledge
-```
-
-Это позволяет лучше контролировать размер контекста и сохранять важную информацию длинного диалога.
-
----
-
-# Итоговая архитектура
-
-```text
-                     USER
-                       ↓
-                  New Message
-                       │
-          ┌────────────┴────────────┐
-          ↓                         ↓
-   Conversation                 Task State
-      History                     Update
-          │                         │
-          └────────────┬────────────┘
-                       ↓
-             Contextual Rewrite
-                       ↓
-                 RAG Retrieval
-                       ↓
-               Similarity Filter
-                       ↓
-                Relevant Chunks
-                       │
-          ┌────────────┼────────────┐
-          ↓            ↓            ↓
-       History     Task State    RAG Context
-          └────────────┼────────────┘
-                       ↓
-                      LLM
-                       ↓
-               Answer + Sources
-                       ↓
-              Source Validation
-                       ↓
-                Save History
-```
-
----
-
-# Результат
-
-Получен мини-чат с:
-
-```text
-RAG
-+
-Conversation History
-+
-Task Memory
-+
-Contextual Query Rewrite
-+
-Sources
-+
-Persistence
-```
-
-Система способна поддерживать многошаговый диалог, использовать локальную базу знаний и отдельно сохранять важное состояние текущей задачи.
-
-Ключевая идея Day 25:
-
-```text
-History ≠ Task State ≠ Knowledge Base
-```
-
-Каждый слой памяти имеет отдельную роль.
-
-Итоговый pipeline:
-
-```text
-Remember
-→ Rewrite
-→ Retrieve
-→ Filter
-→ Answer
-→ Cite
-→ Validate
-→ Persist
-```
+Day 26 завершает первый эксперимент проекта с полностью локальным LLM inference.
