@@ -1,0 +1,10 @@
+{
+  "day": 28,
+  "embedding_model": "nomic-embed-text",
+  "generation_model": "qwen2.5-coder:0.5b",
+  "ollama_base_url": "http://localhost:11434",
+  "chunk_size": 1200,
+  "chunk_overlap": 200,
+  "top_k": 4,
+  "index_file": "indexes/index_local.json"
+}
