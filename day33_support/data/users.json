@@ -1,0 +1,4 @@
+[
+  {"id": "U-001", "name": "Анна (демо)", "plan": "Business", "status": "active", "mfa_enabled": true},
+  {"id": "U-002", "name": "Иван (демо)", "plan": "Basic", "status": "active", "mfa_enabled": false}
+]
